@@ -46,6 +46,15 @@ final class FullRemovalTests: XCTestCase {
         try Data([9,8,7,6]).write(to: db)
         XCTAssertThrowsError(try u.validate(review, selected: selected, otherIDs: []))
     }
+    func testKnownVendorNamesDoNotAuthorizeUnverifiedJobs() throws {
+        let r = try fixture(); defer { try? FileManager.default.removeItem(at: r) }
+        let id = "com.piriform.ccleaner", a = try app(r, id)
+        let label = "com.piriform.ccleaner.update"
+        let agent = try put(r, "Library/LaunchAgents/\(label).plist", try plist(["Label": label, "Program": "/bin/sh"]))
+        let review = tool(r).review(appPath: a.path, bundleID: id)
+        XCTAssertTrue(review.items.contains { $0.path == agent.path && $0.kind == .manual && !$0.allowed })
+        XCTAssertFalse(review.defaultSelection.contains(agent.path))
+    }
     func testVendorNameAloneDoesNotBlock() throws {
         let r = try fixture(); defer { try? FileManager.default.removeItem(at: r) }
         let vendorID = "com.docker.example"

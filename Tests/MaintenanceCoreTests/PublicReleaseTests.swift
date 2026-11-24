@@ -35,6 +35,8 @@ final class PublicReleaseTests: XCTestCase {
         let target = "/private/var/root/MacMaintenance-removed.aBc123XY/item"
         let script = try XCTUnwrap(PrivilegedRecovery.restoreScript(target))
         XCTAssertTrue(script.contains("identity.txt")); XCTAssertTrue(script.contains("/bin/mv -n")); XCTAssertTrue(script.contains("test ! -L \"$dest\"")); XCTAssertFalse(script.contains("launchctl enable"))
+        XCTAssertTrue(script.contains("/bin/ls -lde")); XCTAssertTrue(script.contains("0022")); XCTAssertFalse(script.contains("= 80"))
+        XCTAssertTrue(script.contains("stat -f '%d:%i:%m:%z' \"$dest\""))
         for path in ["/tmp/item", target + "/child", target.replacingOccurrences(of: "aBc123XY", with: "../root"), target.replacingOccurrences(of: "aBc123XY", with: "1234567")] { XCTAssertNil(PrivilegedRecovery.restoreScript(path)) }
     }
     func testPrivilegedChecksAndExactPlistName() throws {

@@ -11,20 +11,19 @@ public enum PrivilegedRecovery {
     public static func restoreScript(_ target: String) -> String? {
         guard validDestination(target) else { return nil }
         let q = ServiceRemoval.quote
-        return (["set -eu", "item=" + q(target), "d=${item%/*}",
+        return (["set -eu", "export LC_ALL=C", "item=" + q(target), "d=${item%/*}",
                 "p=$d"] + ServiceRemoval.strictRootChecks + [
-                "test -d \"$d\"; test ! -L \"$item\"; test -e \"$item\"",
-                "for f in original-path.txt identity.txt; do test -f \"$d/$f\"; test ! -L \"$d/$f\"; test \"$(/usr/bin/stat -f '%u:%Lp' \"$d/$f\")\" = 0:600; done",
+                "test -d \"$d\"; test \"$(/usr/bin/stat -f '%Lp' \"$d\")\" = 700; check_root_path \"$item\"; test -e \"$item\"",
+                "for f in original-path.txt identity.txt; do test -f \"$d/$f\"; test ! -L \"$d/$f\"; test \"$(/usr/bin/stat -f '%u:%Lp' \"$d/$f\")\" = 0:600; check_root_path \"$d/$f\"; done",
                 "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$item\")\" = \"$(/bin/cat \"$d/identity.txt\")\"",
                 "p=$(/bin/cat \"$d/original-path.txt\")", "case \"$p\" in /Applications/*.app|/Library/LaunchAgents/*|/Library/LaunchDaemons/*|/Library/PrivilegedHelperTools/*|/Library/Application\\ Support/*|/Library/Caches/*|/Library/Preferences/*|/Library/Logs/*) ;; *) exit 42;; esac",
                 "case \"$p\" in */../*|*/./*|*//*) exit 43;; esac",
                 "dest=$p; p=${dest%/*}",
-                "parent=$p", "while [ \"$parent\" != / ] && [ -n \"$parent\" ]; do",
-                "test ! -L \"$parent\"; test -d \"$parent\"", "test \"$(/usr/bin/stat -f '%u' \"$parent\")\" = 0", "mode=$(/usr/bin/stat -f '%Lp' \"$parent\")", "test $((0$mode & 0002)) -eq 0",
-                "if [ $((0$mode & 0020)) -ne 0 ]; then case \"$dest\" in /Applications/*.app) test \"$(/usr/bin/stat -f '%g' \"$parent\")\" = 80;; *) exit 44;; esac; fi", "parent=${parent%/*}", "done"] + [
+                "case \"$dest\" in /Applications/*.app) case \"$p\" in *.app|*.app/*) exit 44;; esac;; *) case \"$p\" in /Library/LaunchAgents|/Library/LaunchDaemons|/Library/PrivilegedHelperTools|/Library/Application\\ Support|/Library/Caches|/Library/Preferences|/Library/Logs) ;; *) exit 44;; esac;; esac",
+                "case \"$dest\" in *[[:cntrl:]]*) exit 44;; esac"] + ServiceRemoval.strictRootChecks + [
                 "test -d \"$p\"; test ! -e \"$dest\"; test ! -L \"$dest\"",
                 "test \"$(/usr/bin/stat -f '%d' \"$p\")\" = \"$(/usr/bin/stat -f '%d' \"$item\")\"",
-                "/bin/mv -n \"$item\" \"$dest\"", "test ! -e \"$item\"; test ! -L \"$item\"; test -e \"$dest\"", "printf '%s\\n' \"$dest\""]).joined(separator: "\n")
+                "/bin/mv -n \"$item\" \"$dest\"", "test ! -e \"$item\"; test ! -L \"$item\"; test ! -L \"$dest\"; test -e \"$dest\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$dest\")\" = \"$(/bin/cat \"$d/identity.txt\")\"", "printf '%s\\n' \"$dest\""]).joined(separator: "\n")
     }
     #if os(macOS)
     public static func restore(_ target: String) -> CommandResult? {

@@ -25,7 +25,7 @@ public enum ServiceRemoval {
         return knownJob(label, bundleID: bundleID, folder: folder) ? label : nil
     }
     static func child(_ path: String, of root: String) -> Bool {
-        path.hasPrefix(root + "/") && !path.split(separator: "/").contains("..") && !path.split(separator: "/").contains(".") && !path.contains("\n") && !path.contains("\r")
+        path.hasPrefix(root + "/") && !path.hasSuffix("/") && !path.contains("//") && !path.split(separator: "/").contains("..") && !path.split(separator: "/").contains(".") && !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
     }
     // Match the reviewed object, not a fresh identity from an unrelated replacement.
     static func validStatIdentity(_ value: String) -> Bool {
@@ -42,7 +42,20 @@ public enum ServiceRemoval {
     static func quote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
     static func rootOwned(_ path: String) -> Bool {
         guard let a = try? FileManager.default.attributesOfItem(atPath: path), let owner = a[.ownerAccountID] as? NSNumber, let mode = a[.posixPermissions] as? NSNumber else { return false }
-        return owner.intValue == 0 && mode.intValue & 0o022 == 0 && Scanner(roots: []).safeAncestors(URL(fileURLWithPath: path))
+        guard owner.intValue == 0, mode.intValue & 0o022 == 0, Scanner(roots: []).safeAncestors(URL(fileURLWithPath: path)) else { return false }
+        #if os(macOS)
+        let listing = Runner.run(.init("Inspect path ACL", "/bin/ls", ["-lde", path]))
+        return listing.status == 0 && aclFreeListing(listing.output)
+        #else
+        return false
+        #endif
+    }
+    // macOS ls -e prints ACL entries on additional lines. Reject all ACLs.
+    static func aclFreeListing(_ listing: String) -> Bool {
+        guard !listing.isEmpty, !listing.contains("\n"), !listing.contains("\r"),
+              let mode = listing.split(separator: " ", maxSplits: 1).first,
+              mode.count >= 10, mode.first == "d" || mode.first == "-" else { return false }
+        return !mode.contains("+")
     }
     // Only actual permission failures warrant escalation; never retry arbitrary I/O errors as root.
     static func permissionDenied(_ error: Error) -> Bool {
@@ -64,25 +77,19 @@ public enum ServiceRemoval {
     static func applicationMoveScript(path: String, bundleID: String, identity: String) -> String? {
         guard child(path, of: "/Applications"), path.hasSuffix(".app"), !path.split(separator: "/").dropLast().contains(where: { $0.lowercased().hasSuffix(".app") }), FullUninstaller.validID(bundleID), !bundleID.lowercased().hasPrefix("com.apple."), bundleID.lowercased() != "local.macmaintenance.toolkit", validStatIdentity(identity) else { return nil }
         let q = quote
-        return ["set -eu", "p=" + q(path),
-                "parent=${p%/*}",
-                "while [ \"$parent\" != / ] && [ -n \"$parent\" ]; do",
-                "  test ! -L \"$parent\"; test -d \"$parent\"",
-                "  test \"$(/usr/bin/stat -f '%u' \"$parent\")\" = 0",
-                "  mode=$(/usr/bin/stat -f '%Lp' \"$parent\")",
-                "  test $((0$mode & 0002)) -eq 0",
-                "  if [ $((0$mode & 0020)) -ne 0 ]; then test \"$(/usr/bin/stat -f '%g' \"$parent\")\" = 80; fi",
-                "  parent=${parent%/*}", "done",
+        return (["set -eu", "export LC_ALL=C", "p=" + q(path)] + strictRootChecks + [
+                "test -d \"$p/Contents\"; test -f \"$p/Contents/Info.plist\"",
+                "check_root_path \"$p/Contents\"; check_root_path \"$p/Contents/Info.plist\"",
                 "test -d \"$p\"; test ! -L \"$p\"",
                 "test ! -L \"$p/Contents\"; test ! -L \"$p/Contents/Info.plist\"",
                 "test \"$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \"$p/Contents/Info.plist\")\" = " + q(bundleID),
                 "test \"$(/usr/libexec/PlistBuddy -c 'Print :CFBundlePackageType' \"$p/Contents/Info.plist\")\" = APPL",
-                "umask 077", "d=$(/usr/bin/mktemp -d /private/var/root/MacMaintenance-removed.XXXXXXXX)",
-                "printf '%s\\n' \"$p\" > \"$d/original-path.txt\"", "printf '%s\\n' \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" > \"$d/identity.txt\"",
+                "check_root_path /private; check_root_path /private/var; check_root_path /private/var/root", "umask 077", "d=$(/usr/bin/mktemp -d /private/var/root/MacMaintenance-removed.XXXXXXXX)", "check_root_path \"$d\"; test \"$(/usr/bin/stat -f '%Lp' \"$d\")\" = 700",
+                "printf '%s\\n' \"$p\" > \"$d/original-path.txt\"", "printf '%s\\n' " + q(identity) + " > \"$d/identity.txt\"",
                 "test \"$(/usr/bin/stat -f '%d' \"$p\")\" = \"$(/usr/bin/stat -f '%d' \"$d\")\"",
                 "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity),
                 "/bin/mv \"$p\" \"$d/item\"", "test ! -e \"$p\"; test ! -L \"$p\"", "test -d \"$d/item\"; test ! -L \"$d/item\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$d/item\")\" = " + q(identity),
-                "printf '%s\\n' \"$d/item\""].joined(separator: "\n")
+                "printf '%s\\n' \"$d/item\""]).joined(separator: "\n")
     }
     public enum ProcessScan: Equatable, Sendable {
         case verified([Int32])
@@ -200,9 +207,16 @@ public enum ServiceRemoval {
     #endif
     // Recheck in the elevated shell, not just in the unprivileged caller.
     static let strictRootChecks = [
+        "check_root_path() {",
+        "  test ! -L \"$1\" || return 1",
+        "  test \"$(/usr/bin/stat -f '%u' \"$1\")\" = 0 || return 1",
+        "  mode=$(/usr/bin/stat -f '%Lp' \"$1\") || return 1",
+        "  test $((0$mode & 0022)) -eq 0 || return 1",
+        "  listing=$(/bin/ls -lde \"$1\") || return 1",
+        "  printf '%s\\n' \"$listing\" | /usr/bin/awk 'NR == 1 { if ($1 !~ /^[-d]/ || $1 ~ /\\+/) bad=1 } END { exit (NR != 1 || bad) }'",
+        "}",
         "parent=$p", "while [ \"$parent\" != / ] && [ -n \"$parent\" ]; do",
-        "  test ! -L \"$parent\"", "  test \"$(/usr/bin/stat -f '%u' \"$parent\")\" = 0",
-        "  mode=$(/usr/bin/stat -f '%Lp' \"$parent\")", "  test $((0$mode & 0022)) -eq 0",
+        "  check_root_path \"$parent\"",
         "  parent=${parent%/*}", "done"
     ]
     static func rootMoveScript(path: String, identity: String, service: String?, program: String?) -> String {
@@ -218,7 +232,7 @@ public enum ServiceRemoval {
             if parent == "/Library/PrivilegedHelperTools", program != path { return "exit 64" }
         } else if ["/Library/LaunchAgents", "/Library/LaunchDaemons", "/Library/PrivilegedHelperTools"].contains(parent) { return "exit 64" }
         let q = quote
-        var commands = ["set -eu", "p=" + q(path), "test ! -L \"$p\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity)]
+        var commands = ["set -eu", "export LC_ALL=C", "p=" + q(path), "test ! -L \"$p\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity)]
         commands += strictRootChecks
         if let service {
             let label = String(service.split(separator: "/").last ?? "")
@@ -226,7 +240,7 @@ public enum ServiceRemoval {
             commands += ["job=" + q(service), "program=" + q(program ?? ""), "if status=$(/bin/launchctl print \"$job\" 2>&1); then", "  printf '%s\\n' \"$status\" | /usr/bin/awk -v p=\"$program\" -v f=\"$p\" ' { sub(/^[[:space:]]+/, \"\"); if ((p != \"\" && $0 == \"program = \" p) || $0 == \"path = \" f) found=1 } END { exit !found }'", "else code=$?; test \"$code\" = 113; printf '%s\\n' \"$status\" | /usr/bin/grep -qi 'Could not find service'; fi", " /bin/launchctl disable \"$job\"", "if /bin/launchctl print \"$job\" >/dev/null 2>&1; then /bin/launchctl bootout \"$job\"; fi", "if status=$(/bin/launchctl print \"$job\" 2>&1); then exit 31; else code=$?; test \"$code\" = 113; printf '%s\\n' \"$status\" | /usr/bin/grep -qi 'Could not find service'; fi"]
         }
         // No recursive root deletion. A private root-owned quarantine preserves a rollback copy.
-        commands += ["test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity), "umask 077", "d=$(/usr/bin/mktemp -d /private/var/root/MacMaintenance-removed.XXXXXXXX)", "printf '%s\\n' \"$p\" > \"$d/original-path.txt\"", "printf '%s\\n' \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" > \"$d/identity.txt\"", "test \"$(/usr/bin/stat -f '%d' \"$p\")\" = \"$(/usr/bin/stat -f '%d' \"$d\")\"", "/bin/mv \"$p\" \"$d/item\"", "test ! -e \"$p\"; test ! -L \"$p\"", "test ! -L \"$d/item\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$d/item\")\" = " + q(identity), "printf '%s\\n' \"$d/item\""]
+        commands += ["test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity), "check_root_path /private; check_root_path /private/var; check_root_path /private/var/root", "umask 077", "d=$(/usr/bin/mktemp -d /private/var/root/MacMaintenance-removed.XXXXXXXX)", "check_root_path \"$d\"; test \"$(/usr/bin/stat -f '%Lp' \"$d\")\" = 700", "printf '%s\\n' \"$p\" > \"$d/original-path.txt\"", "printf '%s\\n' " + q(identity) + " > \"$d/identity.txt\"", "test \"$(/usr/bin/stat -f '%d' \"$p\")\" = \"$(/usr/bin/stat -f '%d' \"$d\")\"", "check_root_path \"$p\"; test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity), "/bin/mv \"$p\" \"$d/item\"", "test ! -e \"$p\"; test ! -L \"$p\"", "test ! -L \"$d/item\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$d/item\")\" = " + q(identity), "printf '%s\\n' \"$d/item\""]
         return commands.joined(separator: "\n")
     }
 }

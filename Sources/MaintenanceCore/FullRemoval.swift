@@ -105,11 +105,9 @@ public struct FullUninstaller: Sendable {
         // Shared and machine-wide data is shown, not modified without a dedicated authorization path.
         for suffix in ["Application Support/\(id)", "Caches/\(id)", "Preferences/\(id).plist", "Logs/\(id)", "Application Support/\(name)"] {
             let u = systemLibrary.appendingPathComponent(suffix)
-            if exists(u.path), !out.contains(where: { $0.path == u.path }) { var kind: FullRemovalItem.Kind = .manual
-                #if os(macOS)
-                if !suffix.hasSuffix("/" + name), ServiceRemoval.team(path) != nil, ServiceRemoval.rootChain(u.path) { kind = .machineData }
-                #endif
-                out.append(inspect(u, kind, kind == .machineData ? "Exact application ID; administrator authorization and private quarantine." : "Machine-wide data; ownership not verified.")) }
+            if exists(u.path), !out.contains(where: { $0.path == u.path }) {
+                // A matching name and a signed app do not establish ownership of shared data.
+                out.append(inspect(u, .manual, "Machine-wide data; ownership not verified.")) }
         }
         // Shared group containers are intentionally never auto-removable.
         let group = lib.appendingPathComponent("Group Containers")
@@ -130,13 +128,7 @@ public struct FullUninstaller: Sendable {
             for name in names.sorted() {
                 let u = folder.appendingPathComponent(name)
                 let p = name.hasSuffix(".plist") ? plist(u) : nil
-                var label = p?["Label"] as? String ?? ""
-                #if os(macOS)
-                // An unreadable known plist is only a candidate for privileged verification.
-                // The elevated operation must read and match its real Label before touching it.
-                if p == nil, !user, ServiceRemoval.rootChain(u.path), ServiceRemoval.team(path) != nil,
-                   let expected = ServiceRemoval.knownPlistLabel(name, bundleID: id, folder: folder.lastPathComponent) { label = expected }
-                #endif
+                let label = p?["Label"] as? String ?? ""
                 let program = (p?["Program"] as? String) ?? (p?["ProgramArguments"] as? [String])?.first ?? ""
                 let inside = program.hasPrefix(path + "/") && !program.split(separator: "/").contains("..") && !program.split(separator: "/").contains(".")
                 let lower = id.lowercased()
@@ -147,14 +139,12 @@ public struct FullUninstaller: Sendable {
                 let direct = inside && Scanner(roots: []).safeAncestors(URL(fileURLWithPath: program))
                 var verifiedProgram = direct
                 #if os(macOS)
-                let known = ServiceRemoval.knownJob(label, bundleID: id, folder: folder.lastPathComponent) && name == label + ".plist"
                 if !direct && (program == systemLibrary.appendingPathComponent("PrivilegedHelperTools/" + label).path || ServiceRemoval.child(program, of: systemLibrary.appendingPathComponent("Application Support/" + id).path)) && ServiceRemoval.rootChain(program) && ServiceRemoval.sameTeam(path, program) { verifiedProgram = true }
                 #endif
                 let verified = name == label + ".plist" && Self.validID(label) && (named || direct) && verifiedProgram
                 var kind: FullRemovalItem.Kind = user && verified && direct ? .agent : .manual
                 #if os(macOS)
-                if user && known { kind = .agent }
-                if !user && ["LaunchDaemons", "LaunchAgents"].contains(folder.lastPathComponent) && ServiceRemoval.rootChain(u.path) && ((verified && ServiceRemoval.sameTeam(path, program)) || (known && ServiceRemoval.team(path) != nil)) {
+                if !user && ["LaunchDaemons", "LaunchAgents"].contains(folder.lastPathComponent) && ServiceRemoval.rootChain(u.path) && verified && ServiceRemoval.sameTeam(path, program) {
                     kind = folder.lastPathComponent == "LaunchDaemons" ? .daemon : .machineAgent
                 }
                 if folder.lastPathComponent == "PrivilegedHelperTools", Self.validID(name), ServiceRemoval.belongs(name, to: id) || declaredIDs.contains(name), ServiceRemoval.rootChain(u.path), ServiceRemoval.sameTeam(path, u.path) { kind = .helper }

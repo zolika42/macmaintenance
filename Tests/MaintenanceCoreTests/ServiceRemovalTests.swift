@@ -96,6 +96,13 @@ final class ServiceRemovalTests: XCTestCase {
         XCTAssertThrowsError(try ServiceRemoval.moveWithPermissionFallback(source, trash: { _ in throw CocoaError(.fileWriteNoPermission) }, authorized: { throw CocoaError(.userCancelled) }))
         XCTAssertTrue(ServiceRemoval.permissionDenied(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError, userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: 13)])))
     }
+    func testACLListingFailsClosed() {
+        XCTAssertTrue(ServiceRemoval.aclFreeListing("drwxr-xr-x  2 root wheel 64 /Library/Test"))
+        XCTAssertTrue(ServiceRemoval.aclFreeListing("-rw-------@ 1 root wheel 64 /Library/Test"))
+        for listing in ["", "ls: denied", "drwxr-xr-x+ 2 root wheel 64 /Library/Test", "drwxr-xr-x@ 2 root wheel 64 /Library/Test\n 0: group:everyone allow write", "lrwxr-xr-x 1 root wheel 64 /Library/Test"] {
+            XCTAssertFalse(ServiceRemoval.aclFreeListing(listing), listing)
+        }
+    }
     func testReviewedStatIdentityCannotBeReplaced() {
         XCTAssertTrue(ServiceRemoval.matchesStatIdentity("1:2:3:4", device: 1, inode: 2))
         XCTAssertFalse(ServiceRemoval.matchesStatIdentity("9:2:3:4", device: 1, inode: 2))
@@ -119,6 +126,10 @@ final class ServiceRemovalTests: XCTestCase {
         for id in ["com.apple.Finder", "local.macmaintenance.toolkit"] { XCTAssertNil(ServiceRemoval.applicationMoveScript(path: "/Applications/A.app", bundleID: id, identity: "1:2:3:4")) }
         XCTAssertNil(ServiceRemoval.applicationMoveScript(path: "/Applications/A.app", bundleID: "org.example.app", identity: "1:2:3:$(id)"))
         XCTAssertFalse(script.contains("rm -")); XCTAssertFalse(script.contains("chmod")); XCTAssertFalse(script.contains("chflags"))
+        XCTAssertTrue(script.contains("0022")); XCTAssertTrue(script.contains("/bin/ls -lde"))
+        XCTAssertFalse(script.contains("= 80"))
+        XCTAssertNil(ServiceRemoval.applicationMoveScript(path: "/Applications//A.app", bundleID: "org.example.app", identity: "1:2:3:4"))
+        XCTAssertNil(ServiceRemoval.applicationMoveScript(path: "/Applications/A\u{0000}.app", bundleID: "org.example.app", identity: "1:2:3:4"))
     }
     func testAdminPlanQuotesAndChecksBeforeMove() throws {
         let path = "/Library/LaunchDaemons/com.example.a.plist"

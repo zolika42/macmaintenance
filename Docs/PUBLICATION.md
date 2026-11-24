@@ -1,4 +1,4 @@
-# MacMaintenance 2.0.0 — publication candidate
+# MacMaintenance 2.0.1 — publication candidate
 
 No Apple Developer ID; ad-hoc signing only. No paid services or GitHub Actions. Public GPL-3.0-only source repository: zolika42/macmaintenance. Publisher private key remains local. This document is not publication approval.
 
@@ -11,9 +11,9 @@ No Apple Developer ID; ad-hoc signing only. No paid services or GitHub Actions. 
 - Only then make the public repo/Release. If any test fails, do not publish or mark stable.
 
 ## Local artifacts
-`make prepare-public-release` verifies the DMG, generates the Ed25519-signed release.json and checks the embedded public key against the local private key. It never uploads. Files for release v2.0.0 only:
-- Releases/MacMaintenance-2.0.0-arm64.dmg
-- Releases/MacMaintenance-2.0.0-arm64.dmg.sha256
+`make prepare-public-release` verifies the DMG, generates the Ed25519-signed release.json and checks the embedded public key against the local private key. It never uploads. Files for release v2.0.1 only:
+- Releases/MacMaintenance-2.0.1-arm64.dmg
+- Releases/MacMaintenance-2.0.1-arm64.dmg.sha256
 - Releases/release.json
 Publish corresponding source under GPLv3; never upload private keys, private Git history, logs, caches or receipts.
 
@@ -24,3 +24,6 @@ Use the existing KampányMűvek Engine workflow; no site-specific build mechanis
 
 ## Hardening phase 4 (candidate only)
 The native descriptor-relative exclusive rename is exercised for user-cache recovery; it is not yet the privileged implementation. A source identity comparison followed by rename is not an atomic compare-and-rename on writable parents. Never execute an untrusted helper as root. The authenticated, read-only History quarantine scan can rediscover valid completed file receipts after lost UI history; it does not recover an unloaded service whose file was never moved, or start vendor code. Root-owned integration, recovery of interrupted operations, safe privileged native-helper trust and compatibility remain publication gates.
+
+## Limited-scope release proposal (requires explicit publisher approval)
+For 2.0.1, privileged mutations are disabled at the runtime authorization boundary and system-level services are manual inventory only. Normal user Trash, user launchd removal and user-cache recovery remain supported. Root mutation acceptance remains an open development gate for any later version that enables these features; it must not be reported PASS for this beta. Before approving the restricted beta, verify refusal tests, native user removal/reinstall, complete local build and installer QA, optional read-only authorization and receipt discovery, clean download/launch, signed updater, offline key backup, documentation and explicit scope approval. Keep the original v2.0.0 tag and draft assets unchanged and unpublished. Use a new 2.0.1 tag only after the exact source is accepted. No public binary until all applicable gates and explicit approval.

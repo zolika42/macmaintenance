@@ -863,7 +863,7 @@ private struct MainView: View {
                 List(filteredApps) { a in appRow(a) }
             }
             HStack {
-                Text(t("Rendszeralkalmazások elrejtve. Jogosultsági hiba esetén az eltávolító adminisztrátori hitelesítést kér.", "System apps hidden. Permission errors on application bundles trigger administrator authorization.")).font(.caption).foregroundStyle(.secondary)
+                Text(t("Rendszeralkalmazások elrejtve. Jogosultsági hiba esetén használd a Findert vagy a gyártói eltávolítót. A root eltávolítás ebben a bétában nem elérhető.", "System apps hidden. Use Finder or the vendor uninstaller when permission is denied. Root removal is not available in this beta.")).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button(t("Alkalmazáskezelési engedély", "App Management permission")) {
                     if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles") { NSWorkspace.shared.open(url) }
@@ -912,7 +912,7 @@ private struct MainView: View {
     private var batchSheet: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(t("Teljes alkalmazáseltávolítás", "Complete application uninstall")).font(.title.bold())
-            Text(t("A program leállítja az alkalmazást és az igazolt szolgáltatásait (szükség esetén kényszerítve). A kijelölt adatok a Kukába, az adminisztrátori tételek védett karanténba kerülnek. Az adatbázisok és beállítások eltűnnek az alkalmazásból.", "The app and verified services are stopped, forcefully if needed. Selected data moves to Trash; administrator items move to protected quarantine. Databases and settings are removed from the app.")).foregroundStyle(.secondary)
+            Text(t("A program leállítja az alkalmazást és az igazolt felhasználói szolgáltatásait. A kijelölt, engedélyezett adatok a Kukába kerülnek; a rendszerszintű szolgáltatásokat nem módosítjuk. Az adatbázisok és beállítások eltűnhetnek az alkalmazásból.", "The app and verified user services are stopped, forcefully if needed. Eligible selected data moves to Trash; system-level services are not modified. Databases and settings may be removed from the app.")).foregroundStyle(.secondary)
             HStack {
                 Button(t("Minden ellenőrzött adat kijelölése", "Select all verified data")) {
                     fullSelected = Set(batchReviews.flatMap { $0.defaultSelection })
@@ -954,7 +954,7 @@ private struct MainView: View {
     }
     private var settings: some View {
         Form { Toggle(t("Magyar felület", "Hungarian interface"), isOn: $hu); Toggle(t("Menüsor ikon", "Menu bar icon"), isOn: $menuBar); Toggle(t("Óránkénti rendszerellenőrzés nyitott ablaknál", "Hourly read-only audit while window is open"), isOn: $schedule)
-            Text(t("Nincs saját állandó háttérdaemon vagy telemetria. Az internetes frissítés opcionális. Adminisztrátori műveleteknél natív hitelesítés szükséges. A diagnosztikai parancsok kimenete angol lehet.", "No persistent background daemon or telemetry. Online updates are optional. Administrator operations require native authorization. Diagnostic command output may be English."))
+            Text(t("Nincs saját állandó háttérdaemon vagy telemetria. Az internetes frissítés opcionális. A root karantén olvasása natív hitelesítést kérhet; root módosítás nincs. A diagnosztikai parancsok kimenete angol lehet.", "No persistent background daemon or telemetry. Online updates are optional. Read-only root quarantine inspection may require native authorization; root mutation is disabled. Diagnostic command output may be English."))
             Button(t("Jogosultságok beállítása", "Permission setup")) { showPermissionSetup = true }.disabled(model.busy)
             Button(t("Frissítési beállítások", "Update settings")) { model.page = .updates }
             Text("MacMaintenance " + updates.installed + " · ARM64").foregroundStyle(.secondary)

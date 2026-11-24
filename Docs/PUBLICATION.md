@@ -21,3 +21,6 @@ Use the official public source repository `zolika42/macmaintenance`. Publish an 
 
 ## Portfolio site
 Use the existing KampányMűvek Engine workflow; no site-specific build mechanism or binary on the server. Planned route /macmaintenance/ on horvathzoltanlajos.hu. Publish copy in PORTFOLIO_COPY.md only after the actual asset URLs return the correct files. Add real screenshots from the installed version. Do not claim Intel support, full removal of every service, notarization or production certification.
+
+## Hardening phase 4 (candidate only)
+The native descriptor-relative exclusive rename is exercised for user-cache recovery; it is not yet the privileged implementation. A source identity comparison followed by rename is not an atomic compare-and-rename on writable parents. Never execute an untrusted helper as root. The authenticated, read-only History quarantine scan can rediscover valid completed file receipts after lost UI history; it does not recover an unloaded service whose file was never moved, or start vendor code. Root-owned integration, recovery of interrupted operations, safe privileged native-helper trust and compatibility remain publication gates.

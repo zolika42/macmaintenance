@@ -31,6 +31,23 @@ final class PublicReleaseTests: XCTestCase {
         XCTAssertNil(OnlineUpdates.verified(try JSONSerialization.data(withJSONObject: object), publicKey: key.publicKey.rawRepresentation))
     }
     #endif
+    func testQuarantineDiscoveryRejectsUntrustedRows() throws {
+        let target = "/private/var/root/MacMaintenance-removed.aBc123XY/item"
+        let prefix = "MM_QUARANTINE_SCAN_V1\n"
+        let original = "/Library/LaunchDaemons/org.example.app.plist"
+        let row = target + "\t" + original
+        XCTAssertEqual(PrivilegedRecovery.parseDiscovery("MM_QUARANTINE_SCAN_V1"), [])
+        let items = try XCTUnwrap(PrivilegedRecovery.parseDiscovery(prefix + row))
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.original, original)
+        for output in [row, prefix + row + "\n" + row, prefix + "/tmp/item\t" + original, prefix + target + "\t/etc/passwd", prefix + target + "\t/Applications/../System/A.app", prefix + target + "\t/Library/Caches/org.example.app/child"] {
+            XCTAssertNil(PrivilegedRecovery.parseDiscovery(output))
+        }
+        let script = PrivilegedRecovery.discoveryScript()
+        XCTAssertFalse(script.contains("/bin/mv"))
+        XCTAssertFalse(script.contains("launchctl"))
+        XCTAssertFalse(script.contains("rm -"))
+    }
     func testQuarantineReceiptScope() throws {
         let target = "/private/var/root/MacMaintenance-removed.aBc123XY/item"
         let script = try XCTUnwrap(PrivilegedRecovery.restoreScript(target))

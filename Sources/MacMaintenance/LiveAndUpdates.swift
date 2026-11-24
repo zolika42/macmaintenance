@@ -133,8 +133,39 @@ private enum LiveSampler {
     @Published private(set) var lastChecked: Date?
     @Published private(set) var checking = false
     @Published var notice = ""
-    @Published var onlineEnabled = UserDefaults.standard.bool(forKey: "updates.online") { didSet { UserDefaults.standard.set(onlineEnabled, forKey: "updates.online"); if onlineEnabled { Task { await check() } } else { onlineRelease = nil; onlineNotice = "" } } }
-    @Published var automaticDownload = UserDefaults.standard.bool(forKey: "updates.automaticDownload") { didSet { UserDefaults.standard.set(automaticDownload, forKey: "updates.automaticDownload"); if automaticDownload { Task { await check() } } } }
+    @Published var onlineEnabled = UserDefaults.standard.bool(forKey: "updates.online") {
+        didSet {
+            UserDefaults.standard.set(onlineEnabled, forKey: "updates.online")
+            if onlineEnabled { Task { await check() } }
+            else { onlineGeneration = UUID(); checkWork?.cancel(); downloadWork?.cancel(); onlineRelease = nil; onlineNotice = "" }
+        }
+    }
+    @Published var automaticDownload = UserDefaults.standard.bool(forKey: "updates.automaticDownload") {
+        didSet {
+            UserDefaults.standard.set(automaticDownload, forKey: "updates.automaticDownload")
+            if automaticDownload && onlineEnabled { Task { await check() } }
+            else if autoDownloadInProgress { downloadWork?.cancel() }
+        }
+    }
+    private var onlineGeneration = UUID()
+    private var checkWork: Task<SignedRelease, Error>?
+    private var downloadWork: Task<URL, Error>?
+    private var autoDownloadInProgress = false
+    func cancelOnlineWork() {
+        onlineGeneration = UUID()
+        checkWork?.cancel(); downloadWork?.cancel()
+        onlineNotice = "Online operation cancelled. / Internetes művelet megszakítva."
+    }
+    private func fetchOnline(_ key: Data) async throws -> SignedRelease {
+        let worker = Task { try await OnlineUpdates.check(publicKey: key) }
+        checkWork = worker; defer { checkWork = nil }
+        return try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+    }
+    private func fetchDMG(_ release: SignedRelease, key: Data) async throws -> URL {
+        let worker = Task { try await OnlineUpdates.download(release, publicKey: key) }
+        downloadWork = worker; defer { downloadWork = nil }
+        return try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+    }
     private var autoDownloaded: SignedRelease?
     private var autoDownloadedURL: URL?
     @Published private(set) var onlineRelease: SignedRelease?
@@ -144,10 +175,16 @@ private enum LiveSampler {
         return Data(base64Encoded: text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     func downloadOnline() async {
-        guard !checking, onlineEnabled, let release = onlineRelease, let key = publicKey else { return }
+        guard !checking, onlineEnabled, let release = onlineRelease, let key = publicKey,
+              let current = ReleaseVersion(installed), let remote = release.releaseVersion, remote > current else { return }
         checking = true; defer { checking = false }
-        do { let url = try await OnlineUpdates.download(release, publicKey: key); NSWorkspace.shared.activateFileViewerSelecting([url]); onlineNotice = "Verified DMG downloaded. Install manually. / Ellenőrzött DMG letöltve." }
-        catch { onlineNotice = "Online download failed: " + error.localizedDescription }
+        let generation = onlineGeneration
+        do {
+            let url = try await fetchDMG(release, key: key)
+            guard onlineEnabled, generation == onlineGeneration else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            onlineNotice = "Verified DMG downloaded. Install manually. / Ellenőrzött DMG letöltve."
+        } catch { if onlineEnabled && generation == onlineGeneration { onlineNotice = "Online download failed: " + error.localizedDescription } }
     }
     private var loop: Task<Void, Never>?
     var available: LocalRelease? { if case .available(let release) = result { return release }; return nil }
@@ -179,23 +216,28 @@ private enum LiveSampler {
         let path = folder
         result = await Task.detached(priority: .utility) { LocalUpdates.check(folder: URL(fileURLWithPath: path, isDirectory: true), current: version, hash: LocalUpdates.sha256) }.value
         if onlineEnabled {
+            let generation = onlineGeneration
             onlineRelease = nil
             if let key = publicKey {
                 do {
-                    let release = try await OnlineUpdates.check(publicKey: key)
-                    if onlineEnabled, let remote = release.releaseVersion, remote > version {
+                    let release = try await fetchOnline(key)
+                    if onlineEnabled, generation == onlineGeneration, let remote = release.releaseVersion, remote > version {
                         onlineRelease = release; onlineNotice = "Verified online release: " + release.version
                         if autoDownloaded == release, let url = autoDownloadedURL, FileManager.default.fileExists(atPath: url.path) { onlineNotice = "Verified DMG downloaded. Install manually: " + url.path }
                         if notifications { await notifyVersion(release.version) }
-                        if automaticDownload && onlineEnabled && (autoDownloaded != release || autoDownloadedURL.map { !FileManager.default.fileExists(atPath: $0.path) } != false) {
+                        if automaticDownload && onlineEnabled && generation == onlineGeneration && (autoDownloaded != release || autoDownloadedURL.map { !FileManager.default.fileExists(atPath: $0.path) } != false) {
                             do {
-                                let url = try await OnlineUpdates.download(release, publicKey: key)
-                                autoDownloaded = release; autoDownloadedURL = url
-                                if onlineEnabled { onlineNotice = "Verified DMG downloaded. Install manually: " + url.path }
-                            } catch { if onlineEnabled { onlineNotice = "Automatic download failed: " + error.localizedDescription } }
+                                autoDownloadInProgress = true
+                                defer { autoDownloadInProgress = false }
+                                let url = try await fetchDMG(release, key: key)
+                                if onlineEnabled && automaticDownload && generation == onlineGeneration {
+                                    autoDownloaded = release; autoDownloadedURL = url
+                                    onlineNotice = "Verified DMG downloaded. Install manually: " + url.path
+                                }
+                            } catch { if onlineEnabled && automaticDownload && generation == onlineGeneration { onlineNotice = "Automatic download failed: " + error.localizedDescription } }
                         }
-                    } else if onlineEnabled { onlineNotice = "No newer verified online release." }
-                } catch { if onlineEnabled { onlineNotice = "Online verification failed: " + error.localizedDescription } }
+                    } else if onlineEnabled && generation == onlineGeneration { onlineNotice = "No newer verified online release." }
+                } catch { if onlineEnabled && generation == onlineGeneration { onlineNotice = "Online verification failed: " + error.localizedDescription } }
             } else { onlineNotice = "Publisher key missing; online updates disabled." }
         }
         lastChecked = Date()
@@ -259,6 +301,7 @@ private enum LiveSampler {
                         Toggle(t("Online verziókeresés engedélyezése (GitHub)", "Enable online version checks (GitHub)"), isOn: $updates.onlineEnabled)
                         Toggle(t("Új, hitelesített DMG automatikus letöltése", "Automatically download new verified DMG"), isOn: $updates.automaticDownload).disabled(!updates.onlineEnabled)
                         Text(updates.onlineNotice).font(.caption).textSelection(.enabled)
+                        if updates.checking && updates.onlineEnabled { Button(t("Internetes művelet megszakítása", "Cancel online operation")) { updates.cancelOnlineWork() } }
                         if updates.onlineRelease != nil { Button(t("Ellenőrzött DMG letöltése", "Download verified DMG")) { Task { await updates.downloadOnline() } }.disabled(updates.checking) }
                         Text(t("A kiadó aláírását és a DMG SHA-256 értékét ellenőrizzük; nincs automatikus telepítés.", "Publisher signature and DMG SHA-256 are checked; no automatic installation.")).font(.caption).foregroundStyle(.secondary)
                     }.padding(6).frame(maxWidth: .infinity, alignment: .leading)

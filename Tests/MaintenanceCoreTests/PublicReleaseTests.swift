@@ -14,6 +14,24 @@ final class PublicReleaseTests: XCTestCase {
         let release = try XCTUnwrap(OnlineUpdates.verified(try envelope()) { _,_ in true })
         XCTAssertEqual(release.downloadURL?.absoluteString, "https://github.com/zolika42/macmaintenance/releases/download/v2.0.0/MacMaintenance-2.0.0-arm64.dmg")
     }
+    func testOnlineTransportAllowlist() throws {
+        for value in ["https://github.com/zolika42/macmaintenance/releases/latest/download/release.json", "https://release-assets.githubusercontent.com/a", "https://objects.githubusercontent.com/a"] {
+            XCTAssertTrue(OnlineUpdates.allowedTransport(try XCTUnwrap(URL(string: value))))
+        }
+        for value in ["http://github.com/a", "https://github.com.evil.example/a", "https://evil.example/a", "https://user@github.com/a", "https://github.com:444/a", "file:///tmp/a"] {
+            XCTAssertFalse(OnlineUpdates.allowedTransport(try XCTUnwrap(URL(string: value))))
+        }
+    }
+    #if canImport(CryptoKit)
+    func testDownloadedPayloadMustMatchSizeAndHash() throws {
+        let data = Data("fixture".utf8)
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let signed = try XCTUnwrap(OnlineUpdates.verified(try envelope(size: data.count, hash: digest)) { _,_ in true })
+        XCTAssertTrue(OnlineUpdates.matchesPayload(data, release: signed))
+        XCTAssertFalse(OnlineUpdates.matchesPayload(Data("fixturE".utf8), release: signed))
+        XCTAssertFalse(OnlineUpdates.matchesPayload(data + Data([0]), release: signed))
+    }
+    #endif
     func testManifestRejectsMalformedOrUntrusted() throws {
         XCTAssertNotNil(OnlineUpdates.verified(try envelope()) { _,_ in true })
         XCTAssertNil(OnlineUpdates.verified(try envelope()) { _,_ in false })

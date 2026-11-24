@@ -7,7 +7,8 @@ public enum PrivilegedRecovery {
         let token = path.dropFirst(prefix.count).dropLast(5)
         return token.count == 8 && token.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) }
     }
-    // Only root-created receipts from this release; no arbitrary source/destination arguments.
+    // Only root-created receipts; no arbitrary source/destination arguments.
+    // Service metadata is diagnostic only; never bootstrap or enable vendor jobs here.
     public static func restoreScript(_ target: String) -> String? {
         guard validDestination(target) else { return nil }
         let q = ServiceRemoval.quote

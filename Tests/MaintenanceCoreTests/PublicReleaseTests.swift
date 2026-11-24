@@ -42,8 +42,8 @@ final class PublicReleaseTests: XCTestCase {
     func testPrivilegedChecksAndExactPlistName() throws {
         XCTAssertEqual(ServiceRemoval.knownPlistLabel("com.piriform.ccleaner.update.plist", bundleID: "com.piriform.ccleaner", folder: "LaunchAgents"), "com.piriform.ccleaner.update")
         XCTAssertNil(ServiceRemoval.knownPlistLabel("com.piriform.ccleaner.update.extra.plist", bundleID: "com.piriform.ccleaner", folder: "LaunchAgents"))
-        let script = ServiceRemoval.rootMoveScript(path: "/Library/LaunchDaemons/com.example.app.plist", identity: "1:2:3:4", service: "system/com.example.app", program: nil)
-        XCTAssertLessThan(try XCTUnwrap(script.range(of: "Print :Label")).lowerBound, try XCTUnwrap(script.range(of: "launchctl disable")).lowerBound)
+        let script = ServiceRemoval.rootMoveScript(path: "/Library/LaunchDaemons/com.example.app.plist", identity: "1:2:3:4", service: "system/com.example.app", program: "/Applications/Example.app/Contents/MacOS/Example")
+        XCTAssertLessThan(try XCTUnwrap(script.range(of: "Print :Label")).lowerBound, try XCTUnwrap(script.range(of: "launchctl bootout")).lowerBound)
         XCTAssertEqual(ServiceRemoval.rootMoveScript(path: "/System/Library/LaunchDaemons/com.apple.test.plist", identity: "1:2:3:4", service: "system/com.apple.test", program: nil), "exit 64")
         XCTAssertEqual(ServiceRemoval.rootMoveScript(path: "/Library/LaunchDaemons/com.example.app.plist", identity: "1:2:3:4", service: "system/org.other.app", program: nil), "exit 64")
         XCTAssertTrue(script.contains("0022")); XCTAssertTrue(script.contains("identity.txt")); XCTAssertTrue(script.contains("stat -f '%d'"))

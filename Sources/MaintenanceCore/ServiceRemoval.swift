@@ -88,7 +88,7 @@ public enum ServiceRemoval {
                 "printf '%s\\n' \"$p\" > \"$d/original-path.txt\"", "printf '%s\\n' " + q(identity) + " > \"$d/identity.txt\"",
                 "test \"$(/usr/bin/stat -f '%d' \"$p\")\" = \"$(/usr/bin/stat -f '%d' \"$d\")\"",
                 "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity),
-                "/bin/mv \"$p\" \"$d/item\"", "test ! -e \"$p\"; test ! -L \"$p\"", "test -d \"$d/item\"; test ! -L \"$d/item\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$d/item\")\" = " + q(identity),
+                "/bin/mv -n \"$p\" \"$d/item\"", "test ! -e \"$p\"; test ! -L \"$p\"", "test -d \"$d/item\"; test ! -L \"$d/item\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$d/item\")\" = " + q(identity),
                 "printf '%s\\n' \"$d/item\""]).joined(separator: "\n")
     }
     public enum ProcessScan: Equatable, Sendable {
@@ -228,7 +228,10 @@ public enum ServiceRemoval {
             let parts = service.split(separator: "/", omittingEmptySubsequences: false)
             let expectedLabel = parent == "/Library/PrivilegedHelperTools" ? leaf : (leaf.hasSuffix(".plist") ? String(leaf.dropLast(6)) : "")
             let domainOK = (parent == "/Library/LaunchAgents" && parts.count == 3 && parts[0] == "gui" && UInt32(parts[1]) != nil) || (["/Library/LaunchDaemons", "/Library/PrivilegedHelperTools"].contains(parent) && parts.count == 2 && parts[0] == "system")
-            guard domainOK, FullUninstaller.validID(expectedLabel), (parts.last.map(String.init) ?? "") == expectedLabel else { return "exit 64" }
+            guard domainOK, FullUninstaller.validID(expectedLabel), (parts.last.map(String.init) ?? "") == expectedLabel,
+                  let program, program.hasPrefix("/"), !program.contains("//"),
+                  !program.split(separator: "/").contains(".."), !program.split(separator: "/").contains("."),
+                  !program.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return "exit 64" }
             if parent == "/Library/PrivilegedHelperTools", program != path { return "exit 64" }
         } else if ["/Library/LaunchAgents", "/Library/LaunchDaemons", "/Library/PrivilegedHelperTools"].contains(parent) { return "exit 64" }
         let q = quote
@@ -238,11 +241,26 @@ public enum ServiceRemoval {
         commands += ["test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity), "check_root_path /private; check_root_path /private/var; check_root_path /private/var/root", "umask 077", "d=$(/usr/bin/mktemp -d /private/var/root/MacMaintenance-removed.XXXXXXXX)", "check_root_path \"$d\"; test \"$(/usr/bin/stat -f '%Lp' \"$d\")\" = 700", "printf '%s\\n' \"$p\" > \"$d/original-path.txt\"", "printf '%s\\n' " + q(identity) + " > \"$d/identity.txt\"", "test \"$(/usr/bin/stat -f '%d' \"$p\")\" = \"$(/usr/bin/stat -f '%d' \"$d\")\""]
         if let service {
             let label = String(service.split(separator: "/").last ?? "")
-            if parent != "/Library/PrivilegedHelperTools" { commands += ["test \"$(/usr/libexec/PlistBuddy -c 'Print :Label' \"$p\")\" = " + q(label)] }
-            commands += ["job=" + q(service), "program=" + q(program ?? ""), "if status=$(/bin/launchctl print \"$job\" 2>&1); then", "  printf '%s\\n' \"$status\" | /usr/bin/awk -v p=\"$program\" -v f=\"$p\" ' { sub(/^[[:space:]]+/, \"\"); if ((p != \"\" && $0 == \"program = \" p) || $0 == \"path = \" f) found=1 } END { exit !found }'", "else code=$?; test \"$code\" = 113; printf '%s\\n' \"$status\" | /usr/bin/grep -qi 'Could not find service'; fi", " /bin/launchctl disable \"$job\"", "if /bin/launchctl print \"$job\" >/dev/null 2>&1; then /bin/launchctl bootout \"$job\"; fi", "if status=$(/bin/launchctl print \"$job\" 2>&1); then exit 31; else code=$?; test \"$code\" = 113; printf '%s\\n' \"$status\" | /usr/bin/grep -qi 'Could not find service'; fi"]
+            if parent != "/Library/PrivilegedHelperTools" {
+                commands += ["test -f \"$p\"", "test \"$(/usr/libexec/PlistBuddy -c 'Print :Label' \"$p\")\" = " + q(label),
+                             "if actual=$(/usr/libexec/PlistBuddy -c 'Print :Program' \"$p\" 2>/dev/null); then :; else actual=$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' \"$p\"); fi",
+                             "test \"$actual\" = " + q(program ?? "")]
+            }
+            // Never persist a disable override: uninstall must not poison a later reinstall.
+            // Record the observed state before bootout. Recovery restores files, not vendor execution.
+            commands += ["job=" + q(service), "program=" + q(program ?? ""),
+                         "printf '%s\\n' \"$job\" > \"$d/service.txt\"",
+                         "if status=$(/bin/launchctl print \"$job\" 2>&1); then",
+                         parent == "/Library/PrivilegedHelperTools"
+                            ? "  printf '%s\\n' \"$status\" | MM_PROGRAM=\"$program\" /usr/bin/awk '{ sub(/^[[:space:]]+/, \"\"); if ($0 == \"program = \" ENVIRON[\"MM_PROGRAM\"]) found=1 } END { exit !found }'"
+                            : "  printf '%s\\n' \"$status\" | MM_PROGRAM=\"$program\" MM_PLIST=\"$p\" /usr/bin/awk '{ sub(/^[[:space:]]+/, \"\"); if ($0 == \"program = \" ENVIRON[\"MM_PROGRAM\"]) prog=1; if ($0 == \"path = \" ENVIRON[\"MM_PLIST\"]) path=1 } END { exit !(prog && path) }'",
+                         "  printf '%s\\n' loaded > \"$d/service-state.txt\"",
+                         "  /bin/launchctl bootout \"$job\"",
+                         "else code=$?; test \"$code\" = 113; printf '%s\\n' \"$status\" | /usr/bin/grep -qi 'Could not find service'; printf '%s\\n' absent > \"$d/service-state.txt\"; fi",
+                         "if status=$(/bin/launchctl print \"$job\" 2>&1); then exit 31; else code=$?; test \"$code\" = 113; printf '%s\\n' \"$status\" | /usr/bin/grep -qi 'Could not find service'; fi"]
         }
         // No recursive root deletion. A private root-owned quarantine preserves a rollback copy.
-        commands += ["check_root_path \"$p\"; test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity), "/bin/mv \"$p\" \"$d/item\"", "test ! -e \"$p\"; test ! -L \"$p\"", "test ! -L \"$d/item\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$d/item\")\" = " + q(identity), "printf '%s\\n' \"$d/item\""]
+        commands += ["check_root_path \"$p\"; test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity), "/bin/mv -n \"$p\" \"$d/item\"", "test ! -e \"$p\"; test ! -L \"$p\"", "test ! -L \"$d/item\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$d/item\")\" = " + q(identity), "printf '%s\\n' \"$d/item\""]
         return commands.joined(separator: "\n")
     }
 }

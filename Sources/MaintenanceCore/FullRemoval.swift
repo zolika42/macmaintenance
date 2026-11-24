@@ -71,7 +71,13 @@ public struct FullUninstaller: Sendable {
         guard Scanner(roots: []).safeAncestors(url), let a = try? FileManager.default.attributesOfItem(atPath: url.path), a[.type] as? FileAttributeType == .typeRegular, let n = a[.size] as? NSNumber, n.intValue <= 1_000_000, let d = try? Data(contentsOf: url) else { return nil }
         return (try? PropertyListSerialization.propertyList(from: d, format: nil)) as? [String: Any]
     }
-    private func exists(_ path: String) -> Bool { (try? FileManager.default.attributesOfItem(atPath: path)) != nil }
+    // A denied stat, dangling symlink or malformed ancestor is not proof of absence.
+    static func definitelyAbsent(_ path: String) -> Bool {
+        var st = stat()
+        let result = path.withCString { lstat($0, &st) }
+        return result != 0 && errno == ENOENT
+    }
+    private func exists(_ path: String) -> Bool { !Self.definitelyAbsent(path) }
     private func inspect(_ url: URL, _ kind: FullRemovalItem.Kind, _ reason: String, label: String? = nil, program: String? = nil) -> FullRemovalItem {
         let parent = url.deletingLastPathComponent()
         let root = ScanRoot(parent.path, parent.lastPathComponent, parent)
@@ -230,13 +236,12 @@ public struct FullUninstaller: Sendable {
                 let status = Runner.run(.init("Inspect agent", "/bin/launchctl", ["print", service]))
                 if status.status == 0 {
                     // The live job must also point into the reviewed app, not just share a label.
-                    guard status.output.split(separator: "\n").contains(where: { line in
-                        let value = line.trimmingCharacters(in: .whitespaces)
-                        return (agent.program.map { !$0.isEmpty && value == "program = " + $0 } ?? false) || value == "path = " + agent.path
-                    }) else { throw RemovalError.refused("Loaded agent executable could not be verified: \(label)") }
+                    let lines = Set(status.output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) })
+                    guard let program = agent.program, !program.isEmpty,
+                          lines.contains("program = " + program), lines.contains("path = " + agent.path) else { throw RemovalError.refused("Loaded agent executable could not be verified: \(label)") }
                 } else if status.status != 113 || !status.output.localizedCaseInsensitiveContains("Could not find service") { throw RemovalError.refused("Cannot verify agent state: \(status.output)") }
-                let disabled = Runner.run(.init("Disable agent", "/bin/launchctl", ["disable", service]))
-                guard disabled.status == 0 else { throw RemovalError.refused("Cannot disable " + label + ": " + disabled.output) }
+                // Do not persist disable overrides: they survive removal and affect reinstall.
+                try Task.checkCancellation()
                 if status.status == 0 {
                     let unload = Runner.run(.init("Unload agent", "/bin/launchctl", ["bootout", service]))
                     guard unload.status == 0 else { throw RemovalError.refused("Cannot unload \(label): \(unload.output)") }
@@ -245,6 +250,7 @@ public struct FullUninstaller: Sendable {
                 guard after.status == 113, after.output.localizedCaseInsensitiveContains("Could not find service") else { throw RemovalError.refused("Agent still registered: " + label) }
                 guard inspect(URL(fileURLWithPath: agent.path), .agent, agent.reason, label: label, program: agent.program) == agent else { throw RemovalError.refused("Agent file changed: " + agent.path) }
                 let dest = try moveToTrash(URL(fileURLWithPath: agent.path))
+                guard !exists(agent.path) else { throw RemovalError.refused("Agent file remains after removal: " + agent.path) }
                 result.moved.append((agent.path, dest?.path ?? "Trash"))
             }
             // Stop privileged daemons first, then quarantine their verified files.
@@ -256,7 +262,7 @@ public struct FullUninstaller: Sendable {
                     try Task.checkCancellation()
                     let job = item.label.map { (kind == .machineAgent ? "gui/\(getuid())/" : "system/") + $0 }
                     let reply = ServiceRemoval.administrator(ServiceRemoval.rootMoveScript(path: item.path, identity: identity, service: job, program: item.program))
-                    guard reply.status == 0, PrivilegedRecovery.validDestination(reply.output), !exists(item.path) else { throw RemovalError.refused("Administrator step failed or cancelled: " + item.path + " — " + reply.output) }
+                    guard reply.status == 0, PrivilegedRecovery.validDestination(reply.output), !exists(item.path) else { throw RemovalError.refused("Administrator step failed or cancelled; service may be unloaded. Review or reinstall before retrying: " + item.path + " — " + reply.output) }
                     result.moved.append((item.path, reply.output))
                 }
             }

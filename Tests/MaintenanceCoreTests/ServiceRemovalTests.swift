@@ -139,6 +139,8 @@ final class ServiceRemovalTests: XCTestCase {
         XCTAssertLessThan(try XCTUnwrap(script.range(of: "launchctl disable")).lowerBound, try XCTUnwrap(script.range(of: "bootout")).lowerBound)
         XCTAssertTrue(script.contains("/usr/bin/stat"))
         XCTAssertTrue(script.contains("/private/var/root/MacMaintenance-removed."))
+        XCTAssertLessThan(try XCTUnwrap(script.range(of: "identity.txt")).lowerBound, try XCTUnwrap(script.range(of: "launchctl disable")).lowerBound)
+        XCTAssertTrue(script.contains("/bin/ls -lde"))
         XCTAssertFalse(script.contains("rm -"))
         XCTAssertLessThan(try XCTUnwrap(script.range(of: "bootout")).lowerBound, try XCTUnwrap(script.range(of: "/bin/mv")).lowerBound)
     }

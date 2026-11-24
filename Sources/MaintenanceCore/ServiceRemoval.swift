@@ -234,13 +234,15 @@ public enum ServiceRemoval {
         let q = quote
         var commands = ["set -eu", "export LC_ALL=C", "p=" + q(path), "test ! -L \"$p\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity)]
         commands += strictRootChecks
+        // Establish the rollback location before mutating launchd state.
+        commands += ["test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity), "check_root_path /private; check_root_path /private/var; check_root_path /private/var/root", "umask 077", "d=$(/usr/bin/mktemp -d /private/var/root/MacMaintenance-removed.XXXXXXXX)", "check_root_path \"$d\"; test \"$(/usr/bin/stat -f '%Lp' \"$d\")\" = 700", "printf '%s\\n' \"$p\" > \"$d/original-path.txt\"", "printf '%s\\n' " + q(identity) + " > \"$d/identity.txt\"", "test \"$(/usr/bin/stat -f '%d' \"$p\")\" = \"$(/usr/bin/stat -f '%d' \"$d\")\""]
         if let service {
             let label = String(service.split(separator: "/").last ?? "")
             if parent != "/Library/PrivilegedHelperTools" { commands += ["test \"$(/usr/libexec/PlistBuddy -c 'Print :Label' \"$p\")\" = " + q(label)] }
             commands += ["job=" + q(service), "program=" + q(program ?? ""), "if status=$(/bin/launchctl print \"$job\" 2>&1); then", "  printf '%s\\n' \"$status\" | /usr/bin/awk -v p=\"$program\" -v f=\"$p\" ' { sub(/^[[:space:]]+/, \"\"); if ((p != \"\" && $0 == \"program = \" p) || $0 == \"path = \" f) found=1 } END { exit !found }'", "else code=$?; test \"$code\" = 113; printf '%s\\n' \"$status\" | /usr/bin/grep -qi 'Could not find service'; fi", " /bin/launchctl disable \"$job\"", "if /bin/launchctl print \"$job\" >/dev/null 2>&1; then /bin/launchctl bootout \"$job\"; fi", "if status=$(/bin/launchctl print \"$job\" 2>&1); then exit 31; else code=$?; test \"$code\" = 113; printf '%s\\n' \"$status\" | /usr/bin/grep -qi 'Could not find service'; fi"]
         }
         // No recursive root deletion. A private root-owned quarantine preserves a rollback copy.
-        commands += ["test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity), "check_root_path /private; check_root_path /private/var; check_root_path /private/var/root", "umask 077", "d=$(/usr/bin/mktemp -d /private/var/root/MacMaintenance-removed.XXXXXXXX)", "check_root_path \"$d\"; test \"$(/usr/bin/stat -f '%Lp' \"$d\")\" = 700", "printf '%s\\n' \"$p\" > \"$d/original-path.txt\"", "printf '%s\\n' " + q(identity) + " > \"$d/identity.txt\"", "test \"$(/usr/bin/stat -f '%d' \"$p\")\" = \"$(/usr/bin/stat -f '%d' \"$d\")\"", "check_root_path \"$p\"; test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity), "/bin/mv \"$p\" \"$d/item\"", "test ! -e \"$p\"; test ! -L \"$p\"", "test ! -L \"$d/item\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$d/item\")\" = " + q(identity), "printf '%s\\n' \"$d/item\""]
+        commands += ["check_root_path \"$p\"; test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity), "/bin/mv \"$p\" \"$d/item\"", "test ! -e \"$p\"; test ! -L \"$p\"", "test ! -L \"$d/item\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$d/item\")\" = " + q(identity), "printf '%s\\n' \"$d/item\""]
         return commands.joined(separator: "\n")
     }
 }

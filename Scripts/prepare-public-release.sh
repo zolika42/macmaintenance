@@ -16,5 +16,6 @@ bash Scripts/verify-release.sh
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)
 [[ ! -L Releases/release.json && ! -d Releases/release.json ]]
 swift Scripts/release-sign.swift sign "$key" "Releases/MacMaintenance-$version-arm64.dmg" Releases/release.json
+swift Scripts/release-sign.swift verify Resources/UpdatePublicKey.txt "Releases/MacMaintenance-$version-arm64.dmg" Releases/release.json
 echo '=== SIGNED_PUBLICATION_ARTIFACTS_PREPARED ==='
 echo 'Not uploaded; see Docs/PUBLICATION.md for outstanding public release gates.'

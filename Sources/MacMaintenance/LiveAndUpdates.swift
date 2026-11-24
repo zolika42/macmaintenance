@@ -213,10 +213,10 @@ private enum LiveSampler {
         guard !checking else { return }
         guard let version = ReleaseVersion(installed) else { result = .invalid("Installed app version unavailable"); return }
         checking = true; defer { checking = false }
+        let generation = onlineGeneration
         let path = folder
         result = await Task.detached(priority: .utility) { LocalUpdates.check(folder: URL(fileURLWithPath: path, isDirectory: true), current: version, hash: LocalUpdates.sha256) }.value
-        if onlineEnabled {
-            let generation = onlineGeneration
+        if onlineEnabled && generation == onlineGeneration {
             onlineRelease = nil
             if let key = publicKey {
                 do {

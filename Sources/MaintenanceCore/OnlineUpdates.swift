@@ -16,7 +16,7 @@ public struct ReleaseEnvelope: Codable, Sendable {
     public let payload: String, signature: String
 }
 #if os(macOS)
-private final class ReleaseRedirectPolicy: NSObject, URLSessionTaskDelegate, Sendable {
+private final class ReleaseRedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest) async -> URLRequest? {
         guard let url = request.url, OnlineUpdates.allowedTransport(url) else { return nil }
         return request

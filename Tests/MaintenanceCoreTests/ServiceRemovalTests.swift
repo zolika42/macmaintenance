@@ -102,7 +102,7 @@ final class ServiceRemovalTests: XCTestCase {
         let service = ServiceRemoval.rootMoveScript(path: "/Library/LaunchDaemons/org.example.app.plist", identity: "1:2:3:4", service: "system/org.example.app", program: "/Applications/O'Neil.app/Contents/MacOS/A")
         let helper = ServiceRemoval.rootMoveScript(path: "/Library/PrivilegedHelperTools/org.example.app", identity: "1:2:3:4", service: "system/org.example.app", program: "/Library/PrivilegedHelperTools/org.example.app")
         let restore = try XCTUnwrap(PrivilegedRecovery.restoreScript("/private/var/root/MacMaintenance-removed.aBc123XY/item"))
-        for plan in [app, service, helper, restore] {
+        for plan in [app, service, helper, restore, PrivilegedRecovery.discoveryScript()] {
             XCTAssertNotEqual(plan, "exit 64")
             let result = Runner.run(.init("Shell syntax only", "/bin/sh", ["-n", "-c", plan]))
             XCTAssertEqual(result.status, 0, result.output)

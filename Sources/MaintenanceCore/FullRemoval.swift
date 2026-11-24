@@ -71,7 +71,13 @@ public struct FullUninstaller: Sendable {
         guard Scanner(roots: []).safeAncestors(url), let a = try? FileManager.default.attributesOfItem(atPath: url.path), a[.type] as? FileAttributeType == .typeRegular, let n = a[.size] as? NSNumber, n.intValue <= 1_000_000, let d = try? Data(contentsOf: url) else { return nil }
         return (try? PropertyListSerialization.propertyList(from: d, format: nil)) as? [String: Any]
     }
-    private func exists(_ path: String) -> Bool { (try? FileManager.default.attributesOfItem(atPath: path)) != nil }
+    // A denied stat, dangling symlink or malformed ancestor is not proof of absence.
+    static func definitelyAbsent(_ path: String) -> Bool {
+        var st = stat()
+        let result = path.withCString { lstat($0, &st) }
+        return result != 0 && errno == ENOENT
+    }
+    private func exists(_ path: String) -> Bool { !Self.definitelyAbsent(path) }
     private func inspect(_ url: URL, _ kind: FullRemovalItem.Kind, _ reason: String, label: String? = nil, program: String? = nil) -> FullRemovalItem {
         let parent = url.deletingLastPathComponent()
         let root = ScanRoot(parent.path, parent.lastPathComponent, parent)
@@ -105,11 +111,9 @@ public struct FullUninstaller: Sendable {
         // Shared and machine-wide data is shown, not modified without a dedicated authorization path.
         for suffix in ["Application Support/\(id)", "Caches/\(id)", "Preferences/\(id).plist", "Logs/\(id)", "Application Support/\(name)"] {
             let u = systemLibrary.appendingPathComponent(suffix)
-            if exists(u.path), !out.contains(where: { $0.path == u.path }) { var kind: FullRemovalItem.Kind = .manual
-                #if os(macOS)
-                if !suffix.hasSuffix("/" + name), ServiceRemoval.team(path) != nil, ServiceRemoval.rootChain(u.path) { kind = .machineData }
-                #endif
-                out.append(inspect(u, kind, kind == .machineData ? "Exact application ID; administrator authorization and private quarantine." : "Machine-wide data; ownership not verified.")) }
+            if exists(u.path), !out.contains(where: { $0.path == u.path }) {
+                // A matching name and a signed app do not establish ownership of shared data.
+                out.append(inspect(u, .manual, "Machine-wide data; ownership not verified.")) }
         }
         // Shared group containers are intentionally never auto-removable.
         let group = lib.appendingPathComponent("Group Containers")
@@ -130,13 +134,7 @@ public struct FullUninstaller: Sendable {
             for name in names.sorted() {
                 let u = folder.appendingPathComponent(name)
                 let p = name.hasSuffix(".plist") ? plist(u) : nil
-                var label = p?["Label"] as? String ?? ""
-                #if os(macOS)
-                // An unreadable known plist is only a candidate for privileged verification.
-                // The elevated operation must read and match its real Label before touching it.
-                if p == nil, !user, ServiceRemoval.rootChain(u.path), ServiceRemoval.team(path) != nil,
-                   let expected = ServiceRemoval.knownPlistLabel(name, bundleID: id, folder: folder.lastPathComponent) { label = expected }
-                #endif
+                let label = p?["Label"] as? String ?? ""
                 let program = (p?["Program"] as? String) ?? (p?["ProgramArguments"] as? [String])?.first ?? ""
                 let inside = program.hasPrefix(path + "/") && !program.split(separator: "/").contains("..") && !program.split(separator: "/").contains(".")
                 let lower = id.lowercased()
@@ -145,21 +143,10 @@ public struct FullUninstaller: Sendable {
                 let declared = declaredIDs.contains(label)
                 let named = ServiceRemoval.belongs(label, to: id) || declared
                 let direct = inside && Scanner(roots: []).safeAncestors(URL(fileURLWithPath: program))
-                var verifiedProgram = direct
-                #if os(macOS)
-                let known = ServiceRemoval.knownJob(label, bundleID: id, folder: folder.lastPathComponent) && name == label + ".plist"
-                if !direct && (program == systemLibrary.appendingPathComponent("PrivilegedHelperTools/" + label).path || ServiceRemoval.child(program, of: systemLibrary.appendingPathComponent("Application Support/" + id).path)) && ServiceRemoval.rootChain(program) && ServiceRemoval.sameTeam(path, program) { verifiedProgram = true }
-                #endif
-                let verified = name == label + ".plist" && Self.validID(label) && (named || direct) && verifiedProgram
-                var kind: FullRemovalItem.Kind = user && verified && direct ? .agent : .manual
-                #if os(macOS)
-                if user && known { kind = .agent }
-                if !user && ["LaunchDaemons", "LaunchAgents"].contains(folder.lastPathComponent) && ServiceRemoval.rootChain(u.path) && ((verified && ServiceRemoval.sameTeam(path, program)) || (known && ServiceRemoval.team(path) != nil)) {
-                    kind = folder.lastPathComponent == "LaunchDaemons" ? .daemon : .machineAgent
-                }
-                if folder.lastPathComponent == "PrivilegedHelperTools", Self.validID(name), ServiceRemoval.belongs(name, to: id) || declaredIDs.contains(name), ServiceRemoval.rootChain(u.path), ServiceRemoval.sameTeam(path, u.path) { kind = .helper }
-                #endif
-                out.append(inspect(u, kind, kind == .manual ? "Unverified service: label=\(label.isEmpty ? name : label), program=\(program.isEmpty ? "unknown" : program). No automatic privileged removal." : "Verified service/helper; stopped before removal, administrator authorization if required.", label: kind == .helper ? name : ([.agent, .machineAgent, .daemon].contains(kind) ? label : nil), program: kind == .helper ? u.path : ([.agent, .machineAgent, .daemon].contains(kind) ? program : nil)))
+                let verified = name == label + ".plist" && Self.validID(label) && (named || direct) && direct
+                // System-level resources are inventory only in the first public beta.
+                let kind: FullRemovalItem.Kind = user && verified ? .agent : .manual
+                out.append(inspect(u, kind, kind == .manual ? "Manual service review: label=\(label.isEmpty ? name : label), program=\(program.isEmpty ? "unknown" : program). Use vendor uninstaller for system services." : "Verified user service; stopped before removal.", label: kind == .helper ? name : ([.agent, .machineAgent, .daemon].contains(kind) ? label : nil), program: kind == .helper ? u.path : ([.agent, .machineAgent, .daemon].contains(kind) ? program : nil)))
             }
         }
         return out
@@ -213,16 +200,8 @@ public struct FullUninstaller: Sendable {
     }
     #if os(macOS)
     public static func authorizedAppMove(_ item: FullRemovalItem, _ bundleID: String) throws -> URL? {
-        guard item.kind == .application, item.allowed, let device = item.device, let inode = item.inode,
-              let stat = ServiceRemoval.statIdentity(item.path), stat.hasPrefix("\(device):\(inode):"),
-              let script = ServiceRemoval.applicationMoveScript(path: item.path, bundleID: bundleID, identity: stat) else {
-            throw RemovalError.refused("Cannot safely authorize this application path. Check System Settings > Privacy & Security > App Management for MacMaintenance.")
-        }
-        let reply = ServiceRemoval.administrator(script)
-        guard reply.status == 0, reply.output.hasPrefix("/private/var/root/MacMaintenance-removed."), reply.output.hasSuffix("/item"), !reply.output.contains("\n") else {
-            throw RemovalError.refused("Administrator removal failed or cancelled: " + reply.output + ". If macOS denies access, enable MacMaintenance in System Settings > Privacy & Security > App Management and retry.")
-        }
-        return URL(fileURLWithPath: reply.output)
+        _ = (item, bundleID)
+        throw RemovalError.refused("Administrator fallback is not available in this Public Beta. Use Finder or the vendor uninstaller; no related user data will be moved after this refusal.")
     }
     public func trash(_ old: FullRemovalReview, selected: Set<String>, otherIDs: Set<String>, dataOnly: Bool = false, stop: @MainActor @Sendable () async -> Bool, isRunning: @MainActor @Sendable () -> Bool, moveToTrash: @Sendable (URL) throws -> URL? = { url in
         var destination: NSURL?
@@ -231,20 +210,24 @@ public struct FullUninstaller: Sendable {
     }, authorizedAppMove: @Sendable (FullRemovalItem, String) throws -> URL? = FullUninstaller.authorizedAppMove) async -> FullRemovalResult {
         var result = FullRemovalResult()
         do {
+            try Task.checkCancellation()
             let items = try validate(old, selected: selected, otherIDs: otherIDs, dataOnly: dataOnly, allowDataChanges: !dataOnly)
+            guard !items.contains(where: { [.daemon, .machineAgent, .helper, .machineData].contains($0.kind) }) else {
+                throw RemovalError.refused("Privileged mutation is unavailable in this Public Beta.")
+            }
             for agent in items where agent.kind == .agent {
+                try Task.checkCancellation()
                 guard let label = agent.label, inspect(URL(fileURLWithPath: agent.path), .agent, agent.reason, label: label, program: agent.program) == agent else { throw RemovalError.refused("Agent file changed before stop: " + agent.path) }
                 let service = "gui/\(getuid())/\(label)"
                 let status = Runner.run(.init("Inspect agent", "/bin/launchctl", ["print", service]))
                 if status.status == 0 {
                     // The live job must also point into the reviewed app, not just share a label.
-                    guard status.output.split(separator: "\n").contains(where: { line in
-                        let value = line.trimmingCharacters(in: .whitespaces)
-                        return (agent.program.map { !$0.isEmpty && value == "program = " + $0 } ?? false) || value == "path = " + agent.path
-                    }) else { throw RemovalError.refused("Loaded agent executable could not be verified: \(label)") }
+                    let lines = Set(status.output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) })
+                    guard let program = agent.program, !program.isEmpty,
+                          lines.contains("program = " + program), lines.contains("path = " + agent.path) else { throw RemovalError.refused("Loaded agent executable could not be verified: \(label)") }
                 } else if status.status != 113 || !status.output.localizedCaseInsensitiveContains("Could not find service") { throw RemovalError.refused("Cannot verify agent state: \(status.output)") }
-                let disabled = Runner.run(.init("Disable agent", "/bin/launchctl", ["disable", service]))
-                guard disabled.status == 0 else { throw RemovalError.refused("Cannot disable " + label + ": " + disabled.output) }
+                // Do not persist disable overrides: they survive removal and affect reinstall.
+                try Task.checkCancellation()
                 if status.status == 0 {
                     let unload = Runner.run(.init("Unload agent", "/bin/launchctl", ["bootout", service]))
                     guard unload.status == 0 else { throw RemovalError.refused("Cannot unload \(label): \(unload.output)") }
@@ -253,26 +236,31 @@ public struct FullUninstaller: Sendable {
                 guard after.status == 113, after.output.localizedCaseInsensitiveContains("Could not find service") else { throw RemovalError.refused("Agent still registered: " + label) }
                 guard inspect(URL(fileURLWithPath: agent.path), .agent, agent.reason, label: label, program: agent.program) == agent else { throw RemovalError.refused("Agent file changed: " + agent.path) }
                 let dest = try moveToTrash(URL(fileURLWithPath: agent.path))
+                guard !exists(agent.path) else { throw RemovalError.refused("Agent file remains after removal: " + agent.path) }
                 result.moved.append((agent.path, dest?.path ?? "Trash"))
             }
             // Stop privileged daemons first, then quarantine their verified files.
             for kind in [FullRemovalItem.Kind.daemon, .machineAgent, .helper] {
                 for item in items where item.kind == kind {
+                    try Task.checkCancellation()
                     let latest = inspect(URL(fileURLWithPath: item.path), kind, item.reason, label: item.label, program: item.program)
-                    guard ServiceRemoval.rootChain(item.path), (latest == item || Self.sameApprovedData(item, latest)), let identity = ServiceRemoval.statIdentity(item.path) else { throw RemovalError.refused("Privileged item changed or unsafe: " + item.path) }
+                    guard ServiceRemoval.rootChain(item.path), (latest == item || Self.sameApprovedData(item, latest)), let identity = ServiceRemoval.statIdentity(item.path), ServiceRemoval.matchesStatIdentity(identity, device: latest.device, inode: latest.inode) else { throw RemovalError.refused("Privileged item changed or unsafe: " + item.path) }
+                    try Task.checkCancellation()
                     let job = item.label.map { (kind == .machineAgent ? "gui/\(getuid())/" : "system/") + $0 }
                     let reply = ServiceRemoval.administrator(ServiceRemoval.rootMoveScript(path: item.path, identity: identity, service: job, program: item.program))
-                    guard reply.status == 0, reply.output.hasPrefix("/private/var/root/MacMaintenance-removed."), !exists(item.path) else { throw RemovalError.refused("Administrator step failed or cancelled: " + item.path + " — " + reply.output) }
+                    guard reply.status == 0, PrivilegedRecovery.validDestination(reply.output), !exists(item.path) else { throw RemovalError.refused("Administrator step failed or cancelled; service may be unloaded. Review or reinstall before retrying: " + item.path + " — " + reply.output) }
                     result.moved.append((item.path, reply.output))
                 }
             }
             if !dataOnly {
+                try Task.checkCancellation()
                 guard await stop(), !(await isRunning()) else { throw RemovalError.refused("Could not verify application stopped after service shutdown: " + old.appPath + "; unresolved service candidates: " + old.items.filter { $0.kind == .manual }.map(\.path).joined(separator: ", ")) }
             }
             // Validate each item again; never permanently delete. Stop on a partial failure.
             let order: [FullRemovalItem.Kind] = [.application, .data, .candidate]
             for kind in order {
                 for item in items where item.kind == kind {
+                    try Task.checkCancellation()
                     let url = URL(fileURLWithPath: item.path)
                     let fresh = inspect(url, kind, item.reason, label: item.label, program: item.program)
                     if await isRunning() {
@@ -281,6 +269,7 @@ public struct FullUninstaller: Sendable {
                     let latest = inspect(url, kind, item.reason, label: item.label, program: item.program)
                     guard kind != .application || identity(item.path, old.bundleID) != nil else { throw RemovalError.refused("Application identity changed: " + item.path) }
                     guard latest == item || (!dataOnly && Self.sameApprovedData(item, latest)), latest == fresh || (!dataOnly && Self.sameApprovedData(fresh, latest)) else { throw RemovalError.refused("File changed or unsafe: " + item.path) }
+                    try Task.checkCancellation()
                     let destination: URL?
                     if kind == .application && !dataOnly {
                         destination = try ServiceRemoval.moveWithPermissionFallback(url, trash: moveToTrash) {
@@ -296,10 +285,12 @@ public struct FullUninstaller: Sendable {
                 }
             }
             for item in items where item.kind == .machineData {
+                try Task.checkCancellation()
                 let latest = inspect(URL(fileURLWithPath: item.path), .machineData, item.reason)
-                guard !(await isRunning()), ServiceRemoval.rootChain(item.path), latest == item || Self.sameApprovedData(item, latest), let fileIdentity = ServiceRemoval.statIdentity(item.path) else { throw RemovalError.refused("Machine data changed or unsafe: " + item.path) }
+                guard !(await isRunning()), ServiceRemoval.rootChain(item.path), latest == item || Self.sameApprovedData(item, latest), let fileIdentity = ServiceRemoval.statIdentity(item.path), ServiceRemoval.matchesStatIdentity(fileIdentity, device: latest.device, inode: latest.inode) else { throw RemovalError.refused("Machine data changed or unsafe: " + item.path) }
+                try Task.checkCancellation()
                 let reply = ServiceRemoval.administrator(ServiceRemoval.rootMoveScript(path: item.path, identity: fileIdentity, service: nil, program: nil))
-                guard reply.status == 0, reply.output.hasPrefix("/private/var/root/MacMaintenance-removed."), !exists(item.path) else { throw RemovalError.refused("Administrator data step failed: " + item.path + " — " + reply.output) }
+                guard reply.status == 0, PrivilegedRecovery.validDestination(reply.output), !exists(item.path) else { throw RemovalError.refused("Administrator data step failed: " + item.path + " — " + reply.output) }
                 result.moved.append((item.path, reply.output))
             }
             let remaining = items.filter { exists($0.path) }.map(\.path)

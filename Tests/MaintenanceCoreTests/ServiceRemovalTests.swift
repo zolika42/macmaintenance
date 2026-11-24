@@ -96,6 +96,48 @@ final class ServiceRemovalTests: XCTestCase {
         XCTAssertThrowsError(try ServiceRemoval.moveWithPermissionFallback(source, trash: { _ in throw CocoaError(.fileWriteNoPermission) }, authorized: { throw CocoaError(.userCancelled) }))
         XCTAssertTrue(ServiceRemoval.permissionDenied(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError, userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: 13)])))
     }
+    #if os(macOS)
+    func testPrivilegedShellPlansParseWithoutExecution() throws {
+        let app = try XCTUnwrap(ServiceRemoval.applicationMoveScript(path: "/Applications/O'Neil.app", bundleID: "org.example.app", identity: "1:2:3:4"))
+        let service = ServiceRemoval.rootMoveScript(path: "/Library/LaunchDaemons/org.example.app.plist", identity: "1:2:3:4", service: "system/org.example.app", program: "/Applications/O'Neil.app/Contents/MacOS/A")
+        let helper = ServiceRemoval.rootMoveScript(path: "/Library/PrivilegedHelperTools/org.example.app", identity: "1:2:3:4", service: "system/org.example.app", program: "/Library/PrivilegedHelperTools/org.example.app")
+        let restore = try XCTUnwrap(PrivilegedRecovery.restoreScript("/private/var/root/MacMaintenance-removed.aBc123XY/item"))
+        for plan in [app, service, helper, restore, PrivilegedRecovery.discoveryScript()] {
+            XCTAssertNotEqual(plan, "exit 64")
+            let result = Runner.run(.init("Shell syntax only", "/bin/sh", ["-n", "-c", plan]))
+            XCTAssertEqual(result.status, 0, result.output)
+        }
+    }
+    #endif
+    func testMissingPathIsNotDanglingLink() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let absent = root.appendingPathComponent("absent")
+        let link = root.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: absent)
+        XCTAssertTrue(FullUninstaller.definitelyAbsent(absent.path))
+        XCTAssertFalse(FullUninstaller.definitelyAbsent(link.path))
+        XCTAssertFalse(FullUninstaller.definitelyAbsent(root.path))
+    }
+    func testACLListingFailsClosed() {
+        XCTAssertTrue(ServiceRemoval.aclFreeListing("drwxr-xr-x  2 root wheel 64 /Library/Test"))
+        XCTAssertTrue(ServiceRemoval.aclFreeListing("-rw-------@ 1 root wheel 64 /Library/Test"))
+        for listing in ["", "ls: denied", "drwxr-xr-x+ 2 root wheel 64 /Library/Test", "drwxr-xr-x@ 2 root wheel 64 /Library/Test\n 0: group:everyone allow write", "lrwxr-xr-x 1 root wheel 64 /Library/Test"] {
+            XCTAssertFalse(ServiceRemoval.aclFreeListing(listing), listing)
+        }
+    }
+    func testReviewedStatIdentityCannotBeReplaced() {
+        XCTAssertTrue(ServiceRemoval.matchesStatIdentity("1:2:3:4", device: 1, inode: 2))
+        XCTAssertFalse(ServiceRemoval.matchesStatIdentity("9:2:3:4", device: 1, inode: 2))
+        XCTAssertFalse(ServiceRemoval.matchesStatIdentity("1:20:3:4", device: 1, inode: 2))
+        XCTAssertFalse(ServiceRemoval.matchesStatIdentity("1:2:3:4", device: nil, inode: 2))
+        XCTAssertFalse(ServiceRemoval.matchesStatIdentity("1:2:3:4", device: 1, inode: nil))
+        for value in ["1::2:3:4", ":1:2:3:4", "1:2:3:4:", "1:2:3", "1:2:3:4:5", "1:2:3:x", "1:2:3:18446744073709551616"] {
+            XCTAssertFalse(ServiceRemoval.validStatIdentity(value), value)
+            XCTAssertFalse(ServiceRemoval.matchesStatIdentity(value, device: 1, inode: 2), value)
+        }
+    }
     func testAuthorizedAppPlanScopeAndIdentity() throws {
         let script = try XCTUnwrap(ServiceRemoval.applicationMoveScript(path: "/Applications/O'Neil.app", bundleID: "org.example.app", identity: "1:2:3:4"))
         XCTAssertTrue(script.contains("CFBundleIdentifier")); XCTAssertTrue(script.contains("CFBundlePackageType"))
@@ -108,15 +150,28 @@ final class ServiceRemovalTests: XCTestCase {
         for id in ["com.apple.Finder", "local.macmaintenance.toolkit"] { XCTAssertNil(ServiceRemoval.applicationMoveScript(path: "/Applications/A.app", bundleID: id, identity: "1:2:3:4")) }
         XCTAssertNil(ServiceRemoval.applicationMoveScript(path: "/Applications/A.app", bundleID: "org.example.app", identity: "1:2:3:$(id)"))
         XCTAssertFalse(script.contains("rm -")); XCTAssertFalse(script.contains("chmod")); XCTAssertFalse(script.contains("chflags"))
+        XCTAssertTrue(script.contains("0022")); XCTAssertTrue(script.contains("/bin/ls -lde"))
+        XCTAssertFalse(script.contains("= 80"))
+        XCTAssertNil(ServiceRemoval.applicationMoveScript(path: "/Applications//A.app", bundleID: "org.example.app", identity: "1:2:3:4"))
+        XCTAssertNil(ServiceRemoval.applicationMoveScript(path: "/Applications/A\u{0000}.app", bundleID: "org.example.app", identity: "1:2:3:4"))
     }
     func testAdminPlanQuotesAndChecksBeforeMove() throws {
         let path = "/Library/LaunchDaemons/com.example.a.plist"
         let script = ServiceRemoval.rootMoveScript(path: path, identity: "1:2:3:4", service: "system/com.example.a", program: "/Applications/O'Neil.app/Contents/MacOS/A")
         XCTAssertTrue(script.contains("O'\\''Neil.app"))
         XCTAssertTrue(script.contains("/bin/launchctl bootout"))
-        XCTAssertLessThan(try XCTUnwrap(script.range(of: "launchctl disable")).lowerBound, try XCTUnwrap(script.range(of: "bootout")).lowerBound)
+        XCTAssertFalse(script.contains("launchctl disable"))
+        XCTAssertFalse(script.contains("launchctl enable"))
+        XCTAssertLessThan(try XCTUnwrap(script.range(of: "service-state.txt")).lowerBound, try XCTUnwrap(script.range(of: "bootout")).lowerBound)
         XCTAssertTrue(script.contains("/usr/bin/stat"))
         XCTAssertTrue(script.contains("/private/var/root/MacMaintenance-removed."))
+        XCTAssertLessThan(try XCTUnwrap(script.range(of: "identity.txt")).lowerBound, try XCTUnwrap(script.range(of: "bootout")).lowerBound)
+        XCTAssertTrue(script.contains("Print :ProgramArguments:0"))
+        XCTAssertTrue(script.contains("prog && path"))
+        XCTAssertTrue(script.contains("/bin/mv -n"))
+        XCTAssertEqual(ServiceRemoval.rootMoveScript(path: path, identity: "1:2:3:4", service: "system/com.example.a", program: nil), "exit 64")
+        XCTAssertEqual(ServiceRemoval.rootMoveScript(path: path, identity: "1:2:3:4", service: "system/com.example.a", program: "/tmp/../bin/sh"), "exit 64")
+        XCTAssertTrue(script.contains("/bin/ls -lde"))
         XCTAssertFalse(script.contains("rm -"))
         XCTAssertLessThan(try XCTUnwrap(script.range(of: "bootout")).lowerBound, try XCTUnwrap(script.range(of: "/bin/mv")).lowerBound)
     }

@@ -18,7 +18,6 @@ final class NativePublicAcceptanceTests: XCTestCase {
         let fm = FileManager.default
         defer {
             _ = Runner.run(.init("QA cleanup", "/bin/launchctl", ["bootout", job]))
-            _ = Runner.run(.init("QA cleanup", "/bin/launchctl", ["enable", job]))
             try? fm.removeItem(at: root)
         }
         for folder in [exe.deletingLastPathComponent(), agent.deletingLastPathComponent(), data.deletingLastPathComponent(), quarantine] { try fm.createDirectory(at: folder, withIntermediateDirectories: true) }
@@ -32,6 +31,9 @@ final class NativePublicAcceptanceTests: XCTestCase {
         XCTAssertEqual(signed.status, 0, signed.output); guard signed.status == 0 else { return }
         try PropertyListSerialization.data(fromPropertyList: ["Label":id,"ProgramArguments":[exe.path],"KeepAlive":true,"RunAtLoad":true,"ThrottleInterval":1], format: .xml, options: 0).write(to: agent)
         try Data("disposable fixture only".utf8).write(to: data)
+        let beforeOverrides = Runner.run(.init("QA inspect disable overrides", "/bin/launchctl", ["print-disabled", domain]))
+        XCTAssertEqual(beforeOverrides.status, 0, beforeOverrides.output)
+        let beforeEntry = beforeOverrides.output.split(separator: "\n").filter { $0.contains("\"" + id + "\"") }
         let loaded = Runner.run(.init("QA bootstrap", "/bin/launchctl", ["bootstrap",domain,agent.path]))
         XCTAssertEqual(loaded.status, 0, loaded.output); guard loaded.status == 0 else { return }
         var initial = ServiceRemoval.scanUserProcesses(in: app.path)
@@ -66,6 +68,15 @@ final class NativePublicAcceptanceTests: XCTestCase {
         try await Task.sleep(for: .seconds(2))
         let state = Runner.run(.init("QA verify", "/bin/launchctl", ["print",job]))
         XCTAssertNotEqual(state.status, 0); XCTAssertEqual(ServiceRemoval.scanUserProcesses(in: app.path), .verified([]))
+        let afterOverrides = Runner.run(.init("QA inspect disable overrides", "/bin/launchctl", ["print-disabled", domain]))
+        XCTAssertEqual(afterOverrides.status, 0, afterOverrides.output)
+        XCTAssertEqual(afterOverrides.output.split(separator: "\n").filter { $0.contains("\"" + id + "\"") }, beforeEntry, "Removal must not persist a disable override.")
+        // Reinstall the disposable fixture and demonstrate launchd can register it again.
+        for (original, moved) in result.moved { try fm.moveItem(atPath: moved, toPath: original) }
+        let reloaded = Runner.run(.init("QA reinstall", "/bin/launchctl", ["bootstrap", domain, agent.path]))
+        XCTAssertEqual(reloaded.status, 0, reloaded.output)
+        let registered = Runner.run(.init("QA verify reinstall", "/bin/launchctl", ["print", job]))
+        XCTAssertEqual(registered.status, 0, registered.output)
     }
 }
 #endif

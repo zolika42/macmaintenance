@@ -14,6 +14,24 @@ final class PublicReleaseTests: XCTestCase {
         let release = try XCTUnwrap(OnlineUpdates.verified(try envelope()) { _,_ in true })
         XCTAssertEqual(release.downloadURL?.absoluteString, "https://github.com/zolika42/macmaintenance/releases/download/v2.0.0/MacMaintenance-2.0.0-arm64.dmg")
     }
+    func testOnlineTransportAllowlist() throws {
+        for value in ["https://github.com/zolika42/macmaintenance/releases/latest/download/release.json", "https://release-assets.githubusercontent.com/a", "https://objects.githubusercontent.com/a"] {
+            XCTAssertTrue(OnlineUpdates.allowedTransport(try XCTUnwrap(URL(string: value))))
+        }
+        for value in ["http://github.com/a", "https://github.com.evil.example/a", "https://evil.example/a", "https://user@github.com/a", "https://github.com:444/a", "file:///tmp/a"] {
+            XCTAssertFalse(OnlineUpdates.allowedTransport(try XCTUnwrap(URL(string: value))))
+        }
+    }
+    #if canImport(CryptoKit)
+    func testDownloadedPayloadMustMatchSizeAndHash() throws {
+        let data = Data("fixture".utf8)
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let signed = try XCTUnwrap(OnlineUpdates.verified(try envelope(size: data.count, hash: digest)) { _,_ in true })
+        XCTAssertTrue(OnlineUpdates.matchesPayload(data, release: signed))
+        XCTAssertFalse(OnlineUpdates.matchesPayload(Data("fixturE".utf8), release: signed))
+        XCTAssertFalse(OnlineUpdates.matchesPayload(data + Data([0]), release: signed))
+    }
+    #endif
     func testManifestRejectsMalformedOrUntrusted() throws {
         XCTAssertNotNil(OnlineUpdates.verified(try envelope()) { _,_ in true })
         XCTAssertNil(OnlineUpdates.verified(try envelope()) { _,_ in false })
@@ -31,17 +49,46 @@ final class PublicReleaseTests: XCTestCase {
         XCTAssertNil(OnlineUpdates.verified(try JSONSerialization.data(withJSONObject: object), publicKey: key.publicKey.rawRepresentation))
     }
     #endif
+    #if os(macOS)
+    func testPublicBetaAdministratorMutationIsDisabled() {
+        XCTAssertFalse(ServiceRemoval.privilegedMutationAvailable)
+        let result = ServiceRemoval.administrator("/usr/bin/false")
+        XCTAssertNil(result.status)
+        XCTAssertTrue(result.output.contains("unavailable"))
+        let restored = PrivilegedRecovery.restore("/private/var/root/MacMaintenance-removed.aBc123XY/item")
+        XCTAssertNil(restored?.status)
+    }
+    #endif
+    func testQuarantineDiscoveryRejectsUntrustedRows() throws {
+        let target = "/private/var/root/MacMaintenance-removed.aBc123XY/item"
+        let prefix = "MM_QUARANTINE_SCAN_V1\n"
+        let original = "/Library/LaunchDaemons/org.example.app.plist"
+        let row = target + "\t" + original
+        XCTAssertEqual(PrivilegedRecovery.parseDiscovery("MM_QUARANTINE_SCAN_V1"), [])
+        let items = try XCTUnwrap(PrivilegedRecovery.parseDiscovery(prefix + row))
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.original, original)
+        for output in [row, prefix + row + "\n" + row, prefix + "/tmp/item\t" + original, prefix + target + "\t/etc/passwd", prefix + target + "\t/Applications/../System/A.app", prefix + target + "\t/Library/Caches/org.example.app/child"] {
+            XCTAssertNil(PrivilegedRecovery.parseDiscovery(output))
+        }
+        let script = PrivilegedRecovery.discoveryScript()
+        XCTAssertFalse(script.contains("/bin/mv"))
+        XCTAssertFalse(script.contains("launchctl"))
+        XCTAssertFalse(script.contains("rm -"))
+    }
     func testQuarantineReceiptScope() throws {
         let target = "/private/var/root/MacMaintenance-removed.aBc123XY/item"
         let script = try XCTUnwrap(PrivilegedRecovery.restoreScript(target))
         XCTAssertTrue(script.contains("identity.txt")); XCTAssertTrue(script.contains("/bin/mv -n")); XCTAssertTrue(script.contains("test ! -L \"$dest\"")); XCTAssertFalse(script.contains("launchctl enable"))
+        XCTAssertTrue(script.contains("/bin/ls -lde")); XCTAssertTrue(script.contains("0022")); XCTAssertFalse(script.contains("= 80"))
+        XCTAssertTrue(script.contains("stat -f '%d:%i:%m:%z' \"$dest\""))
         for path in ["/tmp/item", target + "/child", target.replacingOccurrences(of: "aBc123XY", with: "../root"), target.replacingOccurrences(of: "aBc123XY", with: "1234567")] { XCTAssertNil(PrivilegedRecovery.restoreScript(path)) }
     }
     func testPrivilegedChecksAndExactPlistName() throws {
         XCTAssertEqual(ServiceRemoval.knownPlistLabel("com.piriform.ccleaner.update.plist", bundleID: "com.piriform.ccleaner", folder: "LaunchAgents"), "com.piriform.ccleaner.update")
         XCTAssertNil(ServiceRemoval.knownPlistLabel("com.piriform.ccleaner.update.extra.plist", bundleID: "com.piriform.ccleaner", folder: "LaunchAgents"))
-        let script = ServiceRemoval.rootMoveScript(path: "/Library/LaunchDaemons/com.example.app.plist", identity: "1:2:3:4", service: "system/com.example.app", program: nil)
-        XCTAssertLessThan(try XCTUnwrap(script.range(of: "Print :Label")).lowerBound, try XCTUnwrap(script.range(of: "launchctl disable")).lowerBound)
+        let script = ServiceRemoval.rootMoveScript(path: "/Library/LaunchDaemons/com.example.app.plist", identity: "1:2:3:4", service: "system/com.example.app", program: "/Applications/Example.app/Contents/MacOS/Example")
+        XCTAssertLessThan(try XCTUnwrap(script.range(of: "Print :Label")).lowerBound, try XCTUnwrap(script.range(of: "launchctl bootout")).lowerBound)
         XCTAssertEqual(ServiceRemoval.rootMoveScript(path: "/System/Library/LaunchDaemons/com.apple.test.plist", identity: "1:2:3:4", service: "system/com.apple.test", program: nil), "exit 64")
         XCTAssertEqual(ServiceRemoval.rootMoveScript(path: "/Library/LaunchDaemons/com.example.app.plist", identity: "1:2:3:4", service: "system/org.other.app", program: nil), "exit 64")
         XCTAssertTrue(script.contains("0022")); XCTAssertTrue(script.contains("identity.txt")); XCTAssertTrue(script.contains("stat -f '%d'"))

@@ -46,6 +46,15 @@ final class FullRemovalTests: XCTestCase {
         try Data([9,8,7,6]).write(to: db)
         XCTAssertThrowsError(try u.validate(review, selected: selected, otherIDs: []))
     }
+    func testKnownVendorNamesDoNotAuthorizeUnverifiedJobs() throws {
+        let r = try fixture(); defer { try? FileManager.default.removeItem(at: r) }
+        let id = "com.piriform.ccleaner", a = try app(r, id)
+        let label = "com.piriform.ccleaner.update"
+        let agent = try put(r, "Library/LaunchAgents/\(label).plist", try plist(["Label": label, "Program": "/bin/sh"]))
+        let review = tool(r).review(appPath: a.path, bundleID: id)
+        XCTAssertTrue(review.items.contains { $0.path == agent.path && $0.kind == .manual && !$0.allowed })
+        XCTAssertFalse(review.defaultSelection.contains(agent.path))
+    }
     func testVendorNameAloneDoesNotBlock() throws {
         let r = try fixture(); defer { try? FileManager.default.removeItem(at: r) }
         let vendorID = "com.docker.example"
@@ -169,6 +178,17 @@ final class FullRemovalTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: db.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: unknown.path))
         XCTAssertTrue(result.failures.contains(where: { $0.contains(unknown.path) }))
+    }
+    @MainActor func testPublicBetaPermissionRefusalPreservesData() async throws {
+        let r = try fixture(); defer { try? FileManager.default.removeItem(at: r) }
+        let a = try app(r), u = tool(r)
+        let db = try put(r, "Library/Application Support/\(id)/db")
+        let review = u.review(appPath: a.path, bundleID: id)
+        let result = await u.trash(review, selected: review.defaultSelection, otherIDs: [], stop: { true }, isRunning: { false }, moveToTrash: { _ in throw CocoaError(.fileWriteNoPermission) })
+        XCTAssertTrue(result.moved.isEmpty)
+        XCTAssertFalse(result.failures.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: a.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: db.path))
     }
     @MainActor func testNativePermissionFallbackContinuesDataRemoval() async throws {
         let r = try fixture(); defer { try? FileManager.default.removeItem(at: r) }

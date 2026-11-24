@@ -264,7 +264,23 @@ private enum LocalAudit {
         message = "Moved to Trash: \(result.0.count). Failed: \(result.1.count).\n" + result.1.joined(separator: "\n")
         record("Trash", "\(result.0.count) moved; \(result.1.count) refused")
     }
+    func discoverPrivilegedReceipts() async {
+        guard !busy else { return }; busy = true; defer { busy = false }
+        do {
+            let receipts = try await Task.detached(priority: .utility) { try PrivilegedRecovery.discover() }.value
+            let known = Set(history.compactMap(\.privilegedTarget))
+            let missing = receipts.filter { !known.contains($0.target) }
+            for receipt in missing {
+                record("Recovered quarantine receipt", receipt.original + " → " + receipt.target, privilegedTarget: receipt.target)
+            }
+            message = "Verified quarantine receipts: \(receipts.count); newly recovered history entries: \(missing.count). No files or services changed."
+        } catch { message = error.localizedDescription }
+    }
     func restorePrivileged(_ item: HistoryItem) async {
+        guard ServiceRemoval.privilegedMutationAvailable else {
+            message = "Privileged recovery is not available in this Public Beta. Quarantine files are retained for manual recovery."
+            return
+        }
         guard !busy, let target = item.privilegedTarget, history.contains(where: { $0.id == item.id && $0.privilegedTarget == target }) else { return }
         busy = true; defer { busy = false }
         let reply = await Task.detached(priority: .utility) { PrivilegedRecovery.restore(target) }.value
@@ -847,7 +863,7 @@ private struct MainView: View {
                 List(filteredApps) { a in appRow(a) }
             }
             HStack {
-                Text(t("Rendszeralkalmazások elrejtve. Jogosultsági hiba esetén az eltávolító adminisztrátori hitelesítést kér.", "System apps hidden. Permission errors on application bundles trigger administrator authorization.")).font(.caption).foregroundStyle(.secondary)
+                Text(t("Rendszeralkalmazások elrejtve. Jogosultsági hiba esetén használd a Findert vagy a gyártói eltávolítót. A root eltávolítás ebben a bétában nem elérhető.", "System apps hidden. Use Finder or the vendor uninstaller when permission is denied. Root removal is not available in this beta.")).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button(t("Alkalmazáskezelési engedély", "App Management permission")) {
                     if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles") { NSWorkspace.shared.open(url) }
@@ -896,7 +912,7 @@ private struct MainView: View {
     private var batchSheet: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(t("Teljes alkalmazáseltávolítás", "Complete application uninstall")).font(.title.bold())
-            Text(t("A program leállítja az alkalmazást és az igazolt szolgáltatásait (szükség esetén kényszerítve). A kijelölt adatok a Kukába, az adminisztrátori tételek védett karanténba kerülnek. Az adatbázisok és beállítások eltűnnek az alkalmazásból.", "The app and verified services are stopped, forcefully if needed. Selected data moves to Trash; administrator items move to protected quarantine. Databases and settings are removed from the app.")).foregroundStyle(.secondary)
+            Text(t("A program leállítja az alkalmazást és az igazolt felhasználói szolgáltatásait. A kijelölt, engedélyezett adatok a Kukába kerülnek; a rendszerszintű szolgáltatásokat nem módosítjuk. Az adatbázisok és beállítások eltűnhetnek az alkalmazásból.", "The app and verified user services are stopped, forcefully if needed. Eligible selected data moves to Trash; system-level services are not modified. Databases and settings may be removed from the app.")).foregroundStyle(.secondary)
             HStack {
                 Button(t("Minden ellenőrzött adat kijelölése", "Select all verified data")) {
                     fullSelected = Set(batchReviews.flatMap { $0.defaultSelection })
@@ -931,13 +947,14 @@ private struct MainView: View {
     }
     private var history: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack { Text(t("A műveletek lokális naplója. Az ellenőrzött fejlesztői cache-ek és új karanténtételek itt visszaállíthatók; más Kukába helyezett elemekhez használd a Findert.", "Local operation log. Verified developer caches and new quarantine items can be restored here; use Finder for other Trash items.")).font(.caption).foregroundStyle(.secondary); Spacer(); Button(t("Kuka megnyitása", "Open Trash")) { NSWorkspace.shared.open(LocalAudit.home.appendingPathComponent(".Trash")) } }
-            List(model.history) { h in HStack { Image(systemName: h.event.contains("refused") ? "exclamationmark.triangle" : h.event.contains("Trash") ? "trash" : "clock").foregroundStyle(.secondary); VStack(alignment: .leading) { Text(h.event).fontWeight(.medium); Text(h.detail).foregroundStyle(.secondary).textSelection(.enabled) }; Spacer(); Text(h.date.formatted()).font(.caption); if h.recovery != nil { Button(t("Visszaállítás…", "Restore…")) { pendingRecovery = h; showRecovery = true }.disabled(model.busy) }; if h.privilegedTarget != nil { Button(t("Karantén visszaállítása…", "Restore quarantine…")) { pendingRecovery = h; showPrivilegedRecovery = true }.disabled(model.busy) } } }
+            HStack { Text(t("A fejlesztői cache-ek itt visszaállíthatók. A korábbi root karantén csak felderíthető; visszaállítása nem része ennek a bétának. Más elemekhez használd a Findert.", "Developer caches can be restored here. Legacy root quarantine is read-only in this beta; use Finder for other Trash items.")).font(.caption).foregroundStyle(.secondary); Spacer(); Button(t("Kuka megnyitása", "Open Trash")) { NSWorkspace.shared.open(LocalAudit.home.appendingPathComponent(".Trash")) } }
+            Button(t("Karanténbejegyzések keresése…", "Find quarantine receipts…")) { Task { await model.discoverPrivilegedReceipts() } }.disabled(model.busy)
+            List(model.history) { h in HStack { Image(systemName: h.event.contains("refused") ? "exclamationmark.triangle" : h.event.contains("Trash") ? "trash" : "clock").foregroundStyle(.secondary); VStack(alignment: .leading) { Text(h.event).fontWeight(.medium); Text(h.detail).foregroundStyle(.secondary).textSelection(.enabled) }; Spacer(); Text(h.date.formatted()).font(.caption); if h.recovery != nil { Button(t("Visszaállítás…", "Restore…")) { pendingRecovery = h; showRecovery = true }.disabled(model.busy) }; if h.privilegedTarget != nil && ServiceRemoval.privilegedMutationAvailable { Button(t("Karantén visszaállítása…", "Restore quarantine…")) { pendingRecovery = h; showPrivilegedRecovery = true }.disabled(model.busy) } } }
         }
     }
     private var settings: some View {
         Form { Toggle(t("Magyar felület", "Hungarian interface"), isOn: $hu); Toggle(t("Menüsor ikon", "Menu bar icon"), isOn: $menuBar); Toggle(t("Óránkénti rendszerellenőrzés nyitott ablaknál", "Hourly read-only audit while window is open"), isOn: $schedule)
-            Text(t("Nincs saját állandó háttérdaemon vagy telemetria. Az internetes frissítés opcionális. Adminisztrátori műveleteknél natív hitelesítés szükséges. A diagnosztikai parancsok kimenete angol lehet.", "No persistent background daemon or telemetry. Online updates are optional. Administrator operations require native authorization. Diagnostic command output may be English."))
+            Text(t("Nincs saját állandó háttérdaemon vagy telemetria. Az internetes frissítés opcionális. A root karantén olvasása natív hitelesítést kérhet; root módosítás nincs. A diagnosztikai parancsok kimenete angol lehet.", "No persistent background daemon or telemetry. Online updates are optional. Read-only root quarantine inspection may require native authorization; root mutation is disabled. Diagnostic command output may be English."))
             Button(t("Jogosultságok beállítása", "Permission setup")) { showPermissionSetup = true }.disabled(model.busy)
             Button(t("Frissítési beállítások", "Update settings")) { model.page = .updates }
             Text("MacMaintenance " + updates.installed + " · ARM64").foregroundStyle(.secondary)

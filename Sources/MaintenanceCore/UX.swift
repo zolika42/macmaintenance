@@ -80,9 +80,9 @@ public struct CacheRecovery: Sendable {
     public func restore(_ receipt: RecoveryReceipt) throws {
         let paths = try validate(receipt)
         #if os(macOS)
-        // Atomic no-replace rename on same volume; no copy/delete fallback.
-        let result = paths.source.path.withCString { src in paths.target.path.withCString { dst in renamex_np(src, dst, UInt32(RENAME_EXCL)) } }
-        if result != 0 { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        // Descriptor-relative exclusive rename; recheck the captured identity.
+        try NativeExclusiveMove.move(source: paths.source.path, destination: paths.target.path,
+                                     device: receipt.device, inode: receipt.inode)
         #else
         _ = paths; throw ScanError.unsupported
         #endif

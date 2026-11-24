@@ -96,6 +96,19 @@ final class ServiceRemovalTests: XCTestCase {
         XCTAssertThrowsError(try ServiceRemoval.moveWithPermissionFallback(source, trash: { _ in throw CocoaError(.fileWriteNoPermission) }, authorized: { throw CocoaError(.userCancelled) }))
         XCTAssertTrue(ServiceRemoval.permissionDenied(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError, userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: 13)])))
     }
+    #if os(macOS)
+    func testPrivilegedShellPlansParseWithoutExecution() throws {
+        let app = try XCTUnwrap(ServiceRemoval.applicationMoveScript(path: "/Applications/O'Neil.app", bundleID: "org.example.app", identity: "1:2:3:4"))
+        let service = ServiceRemoval.rootMoveScript(path: "/Library/LaunchDaemons/org.example.app.plist", identity: "1:2:3:4", service: "system/org.example.app", program: "/Applications/O'Neil.app/Contents/MacOS/A")
+        let helper = ServiceRemoval.rootMoveScript(path: "/Library/PrivilegedHelperTools/org.example.app", identity: "1:2:3:4", service: "system/org.example.app", program: "/Library/PrivilegedHelperTools/org.example.app")
+        let restore = try XCTUnwrap(PrivilegedRecovery.restoreScript("/private/var/root/MacMaintenance-removed.aBc123XY/item"))
+        for plan in [app, service, helper, restore] {
+            XCTAssertNotEqual(plan, "exit 64")
+            let result = Runner.run(.init("Shell syntax only", "/bin/sh", ["-n", "-c", plan]))
+            XCTAssertEqual(result.status, 0, result.output)
+        }
+    }
+    #endif
     func testMissingPathIsNotDanglingLink() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)

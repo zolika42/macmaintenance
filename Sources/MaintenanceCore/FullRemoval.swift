@@ -213,13 +213,13 @@ public struct FullUninstaller: Sendable {
     }
     #if os(macOS)
     public static func authorizedAppMove(_ item: FullRemovalItem, _ bundleID: String) throws -> URL? {
-        guard item.kind == .application, item.allowed, let device = item.device, let inode = item.inode,
-              let stat = ServiceRemoval.statIdentity(item.path), stat.hasPrefix("\(device):\(inode):"),
+        guard !Task.isCancelled, item.kind == .application, item.allowed,
+              let stat = ServiceRemoval.statIdentity(item.path), ServiceRemoval.matchesStatIdentity(stat, device: item.device, inode: item.inode),
               let script = ServiceRemoval.applicationMoveScript(path: item.path, bundleID: bundleID, identity: stat) else {
             throw RemovalError.refused("Cannot safely authorize this application path. Check System Settings > Privacy & Security > App Management for MacMaintenance.")
         }
         let reply = ServiceRemoval.administrator(script)
-        guard reply.status == 0, reply.output.hasPrefix("/private/var/root/MacMaintenance-removed."), reply.output.hasSuffix("/item"), !reply.output.contains("\n") else {
+        guard reply.status == 0, PrivilegedRecovery.validDestination(reply.output) else {
             throw RemovalError.refused("Administrator removal failed or cancelled: " + reply.output + ". If macOS denies access, enable MacMaintenance in System Settings > Privacy & Security > App Management and retry.")
         }
         return URL(fileURLWithPath: reply.output)
@@ -231,8 +231,10 @@ public struct FullUninstaller: Sendable {
     }, authorizedAppMove: @Sendable (FullRemovalItem, String) throws -> URL? = FullUninstaller.authorizedAppMove) async -> FullRemovalResult {
         var result = FullRemovalResult()
         do {
+            try Task.checkCancellation()
             let items = try validate(old, selected: selected, otherIDs: otherIDs, dataOnly: dataOnly, allowDataChanges: !dataOnly)
             for agent in items where agent.kind == .agent {
+                try Task.checkCancellation()
                 guard let label = agent.label, inspect(URL(fileURLWithPath: agent.path), .agent, agent.reason, label: label, program: agent.program) == agent else { throw RemovalError.refused("Agent file changed before stop: " + agent.path) }
                 let service = "gui/\(getuid())/\(label)"
                 let status = Runner.run(.init("Inspect agent", "/bin/launchctl", ["print", service]))
@@ -258,21 +260,25 @@ public struct FullUninstaller: Sendable {
             // Stop privileged daemons first, then quarantine their verified files.
             for kind in [FullRemovalItem.Kind.daemon, .machineAgent, .helper] {
                 for item in items where item.kind == kind {
+                    try Task.checkCancellation()
                     let latest = inspect(URL(fileURLWithPath: item.path), kind, item.reason, label: item.label, program: item.program)
-                    guard ServiceRemoval.rootChain(item.path), (latest == item || Self.sameApprovedData(item, latest)), let identity = ServiceRemoval.statIdentity(item.path) else { throw RemovalError.refused("Privileged item changed or unsafe: " + item.path) }
+                    guard ServiceRemoval.rootChain(item.path), (latest == item || Self.sameApprovedData(item, latest)), let identity = ServiceRemoval.statIdentity(item.path), ServiceRemoval.matchesStatIdentity(identity, device: latest.device, inode: latest.inode) else { throw RemovalError.refused("Privileged item changed or unsafe: " + item.path) }
+                    try Task.checkCancellation()
                     let job = item.label.map { (kind == .machineAgent ? "gui/\(getuid())/" : "system/") + $0 }
                     let reply = ServiceRemoval.administrator(ServiceRemoval.rootMoveScript(path: item.path, identity: identity, service: job, program: item.program))
-                    guard reply.status == 0, reply.output.hasPrefix("/private/var/root/MacMaintenance-removed."), !exists(item.path) else { throw RemovalError.refused("Administrator step failed or cancelled: " + item.path + " — " + reply.output) }
+                    guard reply.status == 0, PrivilegedRecovery.validDestination(reply.output), !exists(item.path) else { throw RemovalError.refused("Administrator step failed or cancelled: " + item.path + " — " + reply.output) }
                     result.moved.append((item.path, reply.output))
                 }
             }
             if !dataOnly {
+                try Task.checkCancellation()
                 guard await stop(), !(await isRunning()) else { throw RemovalError.refused("Could not verify application stopped after service shutdown: " + old.appPath + "; unresolved service candidates: " + old.items.filter { $0.kind == .manual }.map(\.path).joined(separator: ", ")) }
             }
             // Validate each item again; never permanently delete. Stop on a partial failure.
             let order: [FullRemovalItem.Kind] = [.application, .data, .candidate]
             for kind in order {
                 for item in items where item.kind == kind {
+                    try Task.checkCancellation()
                     let url = URL(fileURLWithPath: item.path)
                     let fresh = inspect(url, kind, item.reason, label: item.label, program: item.program)
                     if await isRunning() {
@@ -281,6 +287,7 @@ public struct FullUninstaller: Sendable {
                     let latest = inspect(url, kind, item.reason, label: item.label, program: item.program)
                     guard kind != .application || identity(item.path, old.bundleID) != nil else { throw RemovalError.refused("Application identity changed: " + item.path) }
                     guard latest == item || (!dataOnly && Self.sameApprovedData(item, latest)), latest == fresh || (!dataOnly && Self.sameApprovedData(fresh, latest)) else { throw RemovalError.refused("File changed or unsafe: " + item.path) }
+                    try Task.checkCancellation()
                     let destination: URL?
                     if kind == .application && !dataOnly {
                         destination = try ServiceRemoval.moveWithPermissionFallback(url, trash: moveToTrash) {
@@ -296,10 +303,12 @@ public struct FullUninstaller: Sendable {
                 }
             }
             for item in items where item.kind == .machineData {
+                try Task.checkCancellation()
                 let latest = inspect(URL(fileURLWithPath: item.path), .machineData, item.reason)
-                guard !(await isRunning()), ServiceRemoval.rootChain(item.path), latest == item || Self.sameApprovedData(item, latest), let fileIdentity = ServiceRemoval.statIdentity(item.path) else { throw RemovalError.refused("Machine data changed or unsafe: " + item.path) }
+                guard !(await isRunning()), ServiceRemoval.rootChain(item.path), latest == item || Self.sameApprovedData(item, latest), let fileIdentity = ServiceRemoval.statIdentity(item.path), ServiceRemoval.matchesStatIdentity(fileIdentity, device: latest.device, inode: latest.inode) else { throw RemovalError.refused("Machine data changed or unsafe: " + item.path) }
+                try Task.checkCancellation()
                 let reply = ServiceRemoval.administrator(ServiceRemoval.rootMoveScript(path: item.path, identity: fileIdentity, service: nil, program: nil))
-                guard reply.status == 0, reply.output.hasPrefix("/private/var/root/MacMaintenance-removed."), !exists(item.path) else { throw RemovalError.refused("Administrator data step failed: " + item.path + " — " + reply.output) }
+                guard reply.status == 0, PrivilegedRecovery.validDestination(reply.output), !exists(item.path) else { throw RemovalError.refused("Administrator data step failed: " + item.path + " — " + reply.output) }
                 result.moved.append((item.path, reply.output))
             }
             let remaining = items.filter { exists($0.path) }.map(\.path)

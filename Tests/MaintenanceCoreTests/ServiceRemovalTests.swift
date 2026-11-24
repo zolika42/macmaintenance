@@ -96,6 +96,17 @@ final class ServiceRemovalTests: XCTestCase {
         XCTAssertThrowsError(try ServiceRemoval.moveWithPermissionFallback(source, trash: { _ in throw CocoaError(.fileWriteNoPermission) }, authorized: { throw CocoaError(.userCancelled) }))
         XCTAssertTrue(ServiceRemoval.permissionDenied(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError, userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: 13)])))
     }
+    func testReviewedStatIdentityCannotBeReplaced() {
+        XCTAssertTrue(ServiceRemoval.matchesStatIdentity("1:2:3:4", device: 1, inode: 2))
+        XCTAssertFalse(ServiceRemoval.matchesStatIdentity("9:2:3:4", device: 1, inode: 2))
+        XCTAssertFalse(ServiceRemoval.matchesStatIdentity("1:20:3:4", device: 1, inode: 2))
+        XCTAssertFalse(ServiceRemoval.matchesStatIdentity("1:2:3:4", device: nil, inode: 2))
+        XCTAssertFalse(ServiceRemoval.matchesStatIdentity("1:2:3:4", device: 1, inode: nil))
+        for value in ["1::2:3:4", ":1:2:3:4", "1:2:3:4:", "1:2:3", "1:2:3:4:5", "1:2:3:x", "1:2:3:18446744073709551616"] {
+            XCTAssertFalse(ServiceRemoval.validStatIdentity(value), value)
+            XCTAssertFalse(ServiceRemoval.matchesStatIdentity(value, device: 1, inode: 2), value)
+        }
+    }
     func testAuthorizedAppPlanScopeAndIdentity() throws {
         let script = try XCTUnwrap(ServiceRemoval.applicationMoveScript(path: "/Applications/O'Neil.app", bundleID: "org.example.app", identity: "1:2:3:4"))
         XCTAssertTrue(script.contains("CFBundleIdentifier")); XCTAssertTrue(script.contains("CFBundlePackageType"))

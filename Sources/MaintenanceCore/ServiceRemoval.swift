@@ -27,6 +27,18 @@ public enum ServiceRemoval {
     static func child(_ path: String, of root: String) -> Bool {
         path.hasPrefix(root + "/") && !path.split(separator: "/").contains("..") && !path.split(separator: "/").contains(".") && !path.contains("\n") && !path.contains("\r")
     }
+    // Match the reviewed object, not a fresh identity from an unrelated replacement.
+    static func validStatIdentity(_ value: String) -> Bool {
+        let fields = value.split(separator: ":", omittingEmptySubsequences: false)
+        return fields.count == 4 && fields.allSatisfy { field in
+            !field.isEmpty && field.utf8.allSatisfy { (48...57).contains($0) } && UInt64(field) != nil
+        }
+    }
+    static func matchesStatIdentity(_ value: String, device: UInt64?, inode: UInt64?) -> Bool {
+        guard let device, let inode, validStatIdentity(value) else { return false }
+        let fields = value.split(separator: ":")
+        return UInt64(fields[0]) == device && UInt64(fields[1]) == inode
+    }
     static func quote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
     static func rootOwned(_ path: String) -> Bool {
         guard let a = try? FileManager.default.attributesOfItem(atPath: path), let owner = a[.ownerAccountID] as? NSNumber, let mode = a[.posixPermissions] as? NSNumber else { return false }
@@ -50,7 +62,7 @@ public enum ServiceRemoval {
     // Root escalation is limited to approved third-party application bundles under /Applications.
     // At privilege time verify every ancestor, the original inode, and the exact bundle identifier.
     static func applicationMoveScript(path: String, bundleID: String, identity: String) -> String? {
-        guard child(path, of: "/Applications"), path.hasSuffix(".app"), !path.split(separator: "/").dropLast().contains(where: { $0.lowercased().hasSuffix(".app") }), FullUninstaller.validID(bundleID), !bundleID.lowercased().hasPrefix("com.apple."), bundleID.lowercased() != "local.macmaintenance.toolkit", identity.split(separator: ":").count == 4, identity.utf8.allSatisfy({ (48...57).contains($0) || $0 == 58 }) else { return nil }
+        guard child(path, of: "/Applications"), path.hasSuffix(".app"), !path.split(separator: "/").dropLast().contains(where: { $0.lowercased().hasSuffix(".app") }), FullUninstaller.validID(bundleID), !bundleID.lowercased().hasPrefix("com.apple."), bundleID.lowercased() != "local.macmaintenance.toolkit", validStatIdentity(identity) else { return nil }
         let q = quote
         return ["set -eu", "p=" + q(path),
                 "parent=${p%/*}",
@@ -69,7 +81,7 @@ public enum ServiceRemoval {
                 "printf '%s\\n' \"$p\" > \"$d/original-path.txt\"", "printf '%s\\n' \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" > \"$d/identity.txt\"",
                 "test \"$(/usr/bin/stat -f '%d' \"$p\")\" = \"$(/usr/bin/stat -f '%d' \"$d\")\"",
                 "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity),
-                "/bin/mv \"$p\" \"$d/item\"", "test ! -e \"$p\"; test ! -L \"$p\"", "test -d \"$d/item\"; test ! -L \"$d/item\"",
+                "/bin/mv \"$p\" \"$d/item\"", "test ! -e \"$p\"; test ! -L \"$p\"", "test -d \"$d/item\"; test ! -L \"$d/item\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$d/item\")\" = " + q(identity),
                 "printf '%s\\n' \"$d/item\""].joined(separator: "\n")
     }
     public enum ProcessScan: Equatable, Sendable {
@@ -183,7 +195,7 @@ public enum ServiceRemoval {
     }
     static func statIdentity(_ path: String) -> String? {
         let r = Runner.run(.init("File identity", "/usr/bin/stat", ["-f", "%d:%i:%m:%z", path]))
-        guard r.status == 0, r.output.split(separator: ":").count == 4 else { return nil }; return r.output
+        guard r.status == 0, validStatIdentity(r.output) else { return nil }; return r.output
     }
     #endif
     // Recheck in the elevated shell, not just in the unprivileged caller.
@@ -197,7 +209,7 @@ public enum ServiceRemoval {
         let parent = (path as NSString).deletingLastPathComponent
         let leaf = (path as NSString).lastPathComponent
         let allowedParents = ["/Library/LaunchAgents", "/Library/LaunchDaemons", "/Library/PrivilegedHelperTools", "/Library/Application Support", "/Library/Caches", "/Library/Preferences", "/Library/Logs"]
-        guard allowedParents.contains(parent), child(path, of: parent), FullUninstaller.validID(leaf), identity.split(separator: ":").count == 4, identity.utf8.allSatisfy({ (48...57).contains($0) || $0 == 58 }) else { return "exit 64" }
+        guard allowedParents.contains(parent), child(path, of: parent), FullUninstaller.validID(leaf), validStatIdentity(identity) else { return "exit 64" }
         if let service {
             let parts = service.split(separator: "/", omittingEmptySubsequences: false)
             let expectedLabel = parent == "/Library/PrivilegedHelperTools" ? leaf : (leaf.hasSuffix(".plist") ? String(leaf.dropLast(6)) : "")
@@ -214,7 +226,7 @@ public enum ServiceRemoval {
             commands += ["job=" + q(service), "program=" + q(program ?? ""), "if status=$(/bin/launchctl print \"$job\" 2>&1); then", "  printf '%s\\n' \"$status\" | /usr/bin/awk -v p=\"$program\" -v f=\"$p\" ' { sub(/^[[:space:]]+/, \"\"); if ((p != \"\" && $0 == \"program = \" p) || $0 == \"path = \" f) found=1 } END { exit !found }'", "else code=$?; test \"$code\" = 113; printf '%s\\n' \"$status\" | /usr/bin/grep -qi 'Could not find service'; fi", " /bin/launchctl disable \"$job\"", "if /bin/launchctl print \"$job\" >/dev/null 2>&1; then /bin/launchctl bootout \"$job\"; fi", "if status=$(/bin/launchctl print \"$job\" 2>&1); then exit 31; else code=$?; test \"$code\" = 113; printf '%s\\n' \"$status\" | /usr/bin/grep -qi 'Could not find service'; fi"]
         }
         // No recursive root deletion. A private root-owned quarantine preserves a rollback copy.
-        commands += ["test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity), "umask 077", "d=$(/usr/bin/mktemp -d /private/var/root/MacMaintenance-removed.XXXXXXXX)", "printf '%s\\n' \"$p\" > \"$d/original-path.txt\"", "printf '%s\\n' \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" > \"$d/identity.txt\"", "test \"$(/usr/bin/stat -f '%d' \"$p\")\" = \"$(/usr/bin/stat -f '%d' \"$d\")\"", "/bin/mv \"$p\" \"$d/item\"", "test ! -e \"$p\"; test ! -L \"$p\"", "printf '%s\\n' \"$d/item\""]
+        commands += ["test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" = " + q(identity), "umask 077", "d=$(/usr/bin/mktemp -d /private/var/root/MacMaintenance-removed.XXXXXXXX)", "printf '%s\\n' \"$p\" > \"$d/original-path.txt\"", "printf '%s\\n' \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$p\")\" > \"$d/identity.txt\"", "test \"$(/usr/bin/stat -f '%d' \"$p\")\" = \"$(/usr/bin/stat -f '%d' \"$d\")\"", "/bin/mv \"$p\" \"$d/item\"", "test ! -e \"$p\"; test ! -L \"$p\"", "test ! -L \"$d/item\"", "test \"$(/usr/bin/stat -f '%d:%i:%m:%z' \"$d/item\")\" = " + q(identity), "printf '%s\\n' \"$d/item\""]
         return commands.joined(separator: "\n")
     }
 }

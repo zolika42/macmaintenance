@@ -179,6 +179,17 @@ final class FullRemovalTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: unknown.path))
         XCTAssertTrue(result.failures.contains(where: { $0.contains(unknown.path) }))
     }
+    @MainActor func testPublicBetaPermissionRefusalPreservesData() async throws {
+        let r = try fixture(); defer { try? FileManager.default.removeItem(at: r) }
+        let a = try app(r), u = tool(r)
+        let db = try put(r, "Library/Application Support/\(id)/db")
+        let review = u.review(appPath: a.path, bundleID: id)
+        let result = await u.trash(review, selected: review.defaultSelection, otherIDs: [], stop: { true }, isRunning: { false }, moveToTrash: { _ in throw CocoaError(.fileWriteNoPermission) })
+        XCTAssertTrue(result.moved.isEmpty)
+        XCTAssertFalse(result.failures.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: a.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: db.path))
+    }
     @MainActor func testNativePermissionFallbackContinuesDataRemoval() async throws {
         let r = try fixture(); defer { try? FileManager.default.removeItem(at: r) }
         let a = try app(r), u = tool(r)

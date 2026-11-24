@@ -67,7 +67,7 @@ public enum PrivilegedRecovery {
     }
     #if os(macOS)
     public static func discover() throws -> [DiscoveredReceipt] {
-        let reply = ServiceRemoval.administrator(discoveryScript())
+        let reply = ServiceRemoval.inspectQuarantine()
         guard reply.status == 0, let receipts = parseDiscovery(reply.output) else {
             throw RemovalError.refused("Quarantine inspection failed, cancelled or returned invalid receipts: " + reply.output)
         }

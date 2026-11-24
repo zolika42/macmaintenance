@@ -38,7 +38,7 @@ import MaintenanceCore
                     }
                     GroupBox(t("Adminisztrátori hitelesítés", "Administrator authorization")) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(t("A próba csak a root felhasználó azonosítóját olvassa. A rendszer későbbi eltávolításkor ismét kérhet hitelesítést; ez nem állandó engedély.", "The test only reads the root user ID. macOS may ask again during a later removal; this is not a persistent grant.")).font(.callout)
+                            Text(t("A próba csak a root felhasználó azonosítóját olvassa. Ebben a bétában a root fájlmódosítás nem elérhető; a korábbi karantén olvasása külön hitelesítést kérhet.", "The test only reads the root user ID. This beta does not modify root files; inspecting legacy quarantine may request separate authorization.")).font(.callout)
                             HStack {
                                 Button(t("Natív hitelesítési próba", "Test native authorization")) { Task { await testAdmin() } }.disabled(testingAdmin)
                                 if testingAdmin { ProgressView().controlSize(.small) }

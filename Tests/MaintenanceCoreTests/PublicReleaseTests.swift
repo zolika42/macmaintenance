@@ -31,6 +31,16 @@ final class PublicReleaseTests: XCTestCase {
         XCTAssertNil(OnlineUpdates.verified(try JSONSerialization.data(withJSONObject: object), publicKey: key.publicKey.rawRepresentation))
     }
     #endif
+    #if os(macOS)
+    func testPublicBetaAdministratorMutationIsDisabled() {
+        XCTAssertFalse(ServiceRemoval.privilegedMutationAvailable)
+        let result = ServiceRemoval.administrator("/usr/bin/false")
+        XCTAssertNil(result.status)
+        XCTAssertTrue(result.output.contains("unavailable"))
+        let restored = PrivilegedRecovery.restore("/private/var/root/MacMaintenance-removed.aBc123XY/item")
+        XCTAssertNil(restored?.status)
+    }
+    #endif
     func testQuarantineDiscoveryRejectsUntrustedRows() throws {
         let target = "/private/var/root/MacMaintenance-removed.aBc123XY/item"
         let prefix = "MM_QUARANTINE_SCAN_V1\n"

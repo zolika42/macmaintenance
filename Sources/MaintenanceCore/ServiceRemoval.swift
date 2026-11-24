@@ -188,8 +188,17 @@ public enum ServiceRemoval {
     }
     static func sameTeam(_ a: String, _ b: String) -> Bool { guard let first = team(a) else { return false }; return team(b) == first }
     // Explicit first-run test; never modifies a file or grants persistent authority.
-    public static func testAdministratorAuthorization() -> CommandResult { administrator("/usr/bin/id -u") }
+    // The first public beta does not execute privileged mutation plans.
+    // Keep the audited plans for future development; only these fixed read-only
+    // operations may cross the authorization boundary in this candidate.
+    public static var privilegedMutationAvailable: Bool { false }
+    public static func testAdministratorAuthorization() -> CommandResult { readOnlyAdministrator("/usr/bin/id -u") }
+    static func inspectQuarantine() -> CommandResult { readOnlyAdministrator(PrivilegedRecovery.discoveryScript()) }
     static func administrator(_ script: String) -> CommandResult {
+        _ = script
+        return .init(title: "Administrator operation", output: "Privileged file and service changes are unavailable in this Public Beta. Use the vendor uninstaller or Finder.", status: nil)
+    }
+    private static func readOnlyAdministrator(_ script: String) -> CommandResult {
         Runner.run(.init("Administrator authorization", "/usr/bin/osascript", ["-e", "on run argv", "-e", "do shell script (item 1 of argv) with administrator privileges", "-e", "end run", "--", script]), timeout: 300)
     }
     // A root-owned, non-group/world-writable ancestor chain prevents user-side path substitution.

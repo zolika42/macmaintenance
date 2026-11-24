@@ -1,0 +1,12 @@
+.build/
+build/
+DerivedData/
+Releases/
+.DS_Store
+*.key
+*.pem
+*.p12
+*.pfx
+.env
+.env.*
+*.log

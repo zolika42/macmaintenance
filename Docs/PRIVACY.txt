@@ -1,0 +1,8 @@
+MacMaintenance — Privacy notice
+Publisher: Zoltán Horváth — https://horvathzoltanlajos.hu/
+
+The application performs local maintenance and diagnostics. It can access paths, system information, app files and data if you grant the relevant macOS permissions. Operation history, local configuration and quarantine receipts remain on your Mac. The app does not implement advertising, analytics, telemetry or automatic crash reporting. It does not upload your diagnostic results or app inventory.
+
+Optional online release checking and download connect to GitHub and its release asset infrastructure. Those services receive ordinary connection data, including IP address, and are governed by their own privacy policies. The app verifies a publisher signature and file checksum. You can disable online release checks in Updates. Optional automatic download can retrieve a verified DMG; no automatic installation is performed. The website host has its own access logs and privacy disclosures; this notice covers the application, not the website.
+
+Local history can contain file paths and is not intended for public sharing. Quarantine files remain until you restore or remove them; the app does not automatically erase the Trash. macOS manages access permissions. Contact the publisher through the portfolio site for questions.

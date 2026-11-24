@@ -1,0 +1,3 @@
+# Contributing
+
+Fork the repository, create a branch, make focused changes, add regression tests and open a pull request. Please contribute improvements upstream so everyone benefits. Contributions are licensed GPL-3.0-only; by submitting a patch you confirm you have the right to license it on those terms. Follow AGENTS.md and document native test results, including failure paths. Use disposable fixtures, never real user data. No telemetry, paid dependencies or cloud builds. Do not submit logs containing personal information, signing keys, or privileged-operation exploits in public issues. Maintainers review PRs before merge and sign official releases locally.
